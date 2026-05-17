@@ -1,0 +1,1509 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(factoextra)
+library(FactoMineR)
+library(Rtsne)
+library(DESeq2)
+library(edgeR)
+mm10_gene_length=read.table("E:/databases/hg38_geneloc/hg38_geneloc_rmdp_exonlength",as.is = T,header = T)
+mm10_gene_length$ENSG=substr(mm10_gene_length$ENSG,1,15)
+getwd()
+```
+#combine htseqcount result
+```{r}
+dir0="X:/analyze_data/FEdata/yaobingqing/20250324_HumanNeu/countdata/cellwithneutrophil/"
+gzfile=list.files(path = dir0,pattern = 'gene.counts')
+countdata=list()
+for(i in gzfile){
+  countdata[[gsub('.gene.counts','',i)]]=read.table(paste0(dir0,i),header = F,row.names=1)
+}
+
+dir0="X:/analyze_data/FEdata/yaobingqing/20250324_HumanNeu/countdata/supernatantwithneutrophil/"
+gzfile=list.files(path = dir0,pattern = 'gene.counts')
+for(i in gzfile){
+  countdata[[gsub('.gene.counts','',i)]]=read.table(paste0(dir0,i),header = F,row.names=1)
+}
+
+
+data0=do.call("cbind",countdata)
+colnames(data0)=names(countdata)
+
+df=data.frame(expgene=rownames(data0))
+df$symbol=mm10_gene_length$symbol[match(df$expgene,mm10_gene_length$ENSG)]
+df=df[df$expgene%in%mm10_gene_length$ENSG,]
+data0=data0[df$expgene,]
+
+
+rownames(data0)=df$symbol
+
+fileinfo=read.table("X:/analyze_data/FEdata/yaobingqing/20250324_HumanNeu/sampleinfo.txt",header = T)
+sampleinfo=fileinfo[match(colnames(data0),fileinfo$sample),]
+sampleinfo$LiveDead=plyr::mapvalues(sampleinfo$LiveDead,from = c("pure_L","pure_D","D","L"),to=c("pureLive","pureDead","Dead","Live"))
+sampleinfo$group=paste0(sampleinfo$withTumor,".",sampleinfo$LiveDead)
+sampleinfo$group=factor(sampleinfo$group)
+
+data00=data0
+sampleinfo0=sampleinfo
+
+
+
+
+savelist=list()
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil","supernatantbac")){
+  print(cellline)
+  
+  if(cellline%in%c("cellwithneutrophil")){
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("T.Dead","T.Live","T.wo"),]
+  }else if(cellline%in%c("supernatantbac")){
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("S.Dead","S.Live","S.wo"),]
+  }else{
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("M.medium","S.Dead","S.Live","S.pureDead","S.pureLive","S.wo"),]
+  }
+  data0=data00[,sampleinfo$sample]
+  
+  sampleinfo$group=droplevels(sampleinfo$group)
+  
+  
+  library(limma)
+  library(Glimma)
+  library(edgeR)
+  library(Mus.musculus)
+  
+  
+  data=data0
+  savelist[[cellline]][["data0"]]=data0
+  data[is.na(data)]=0
+  x=DGEList(data)
+  group=sampleinfo$group
+  
+  x$samples$group=group
+  genesym=rownames(x)
+  # genes=select(Mus.musculus,keys=genesym,columns = c("ENTREZID","TXCHROM"),keytype = "SYMBOL")
+  # genes=genes[!duplicated(genes$SYMBOL),]
+  # x$genes=genes
+  
+  # x=x[,x$samples$group%in%c("CTRL1","CMC","N12")]
+  # group=x$samples$group
+  cpm <- cpm(x)
+  lcpm <- cpm(x, log=TRUE, prior.count=2)
+  
+  L <- mean(x$samples$lib.size) * 1e-6
+  M <- median(x$samples$lib.size) * 1e-6
+  c(L, M)
+  
+  table(rowSums(x$counts==0)==5)
+  
+  keep.exprs <- filterByExpr(x, group=group)
+  x <- x[keep.exprs,, keep.lib.sizes=FALSE]
+  
+  lcpm.cutoff <- log2(10/M + 2/L)
+  library(RColorBrewer)
+  nsamples <- ncol(x)
+  col <- brewer.pal(nsamples, "Paired")
+  par(mfrow=c(1,2))
+  plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+  title(main="A. Raw data", xlab="Log-cpm")
+  abline(v=lcpm.cutoff, lty=3)
+  for (i in 2:nsamples){
+    den <- density(lcpm[,i])
+    lines(den$x, den$y, col=col[i], lwd=2)
+  }
+  legend("topright", colnames(x), text.col=col, bty="n")
+  lcpm <- cpm(x, log=TRUE,prior.count=2)
+  plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+  title(main="B. Filtered data", xlab="Log-cpm")
+  abline(v=lcpm.cutoff, lty=3)
+  for (i in 2:nsamples){
+    den <- density(lcpm[,i])
+    lines(den$x, den$y, col=col[i], lwd=2)
+  }
+  legend("topright", colnames(x), text.col=col, bty="n")
+  
+  #归一化基因表达分布
+  x <- calcNormFactors(x, method = "TMM")
+  xexp=x
+  save(xexp,file = "xexp.RData")
+  lcpm <- cpm(x, log=TRUE,prior.count=2)
+  pdf(paste0(cellline,".normalized.pdf"))
+  boxplot(lcpm, las=2, col=col, main="")
+  title(main="Normalised data",ylab="Log-cpm")
+  
+  dev.off()
+  # save(lcpm,file = "lcpm.RData")
+  
+  lcpm <- cpm(x, log=TRUE)
+  savelist[[cellline]][["lcpm"]]=lcpm
+  col.group <- group
+  levels(col.group) <-  brewer.pal(nlevels(col.group), "Set3")
+  col.group <- as.character(col.group)
+  plotMDS(lcpm, labels=group, col=col.group,pch = 21,gene.selection = "common")
+  t=plotMDS(lcpm, labels=colnames(x), col=col.group,pch = 21,gene.selection = "common")
+  title(main="Sample groups")
+  
+  xy = cbind(x=t$x,y=t$y, x$samples)
+  xy$sample=rownames(xy)
+  
+  pdf(paste0(dataname0,"MDS.",cellline,".pdf"))
+  p=ggplot(xy, aes(x=x,y=y))+geom_point(aes(colour = group ))+
+    geom_text(aes(label=sample),size=3)+
+    theme_classic()
+  print(p)
+  dev.off()
+  
+  ##差异分析
+  design=model.matrix(~0+group)
+  colnames(design)=gsub("group","",colnames(design))
+  
+  if(cellline=="cellwithneutrophil"){
+
+    contr.matrix <- makeContrasts(
+      T.Live_vs_T.Dead=T.Live-T.Dead,
+      T.Live_vs_T.wo=T.Live-T.wo,
+      T.Dead_vs_T.wo=T.Dead-T.wo,
+      
+      levels = colnames(design))
+    
+  }else if(cellline%in%c("supernatantbac")){
+    
+    contr.matrix <- makeContrasts(
+      
+      S.Live_vs_S.Dead=S.Live-S.Dead,
+      S.Live_vs_S.wo=S.Live-S.wo,
+      S.Dead_vs_S.wo=S.Dead-S.wo,
+      levels = colnames(design))
+  }else{
+    
+    contr.matrix <- makeContrasts(
+      
+      S.Live_vs_S.Dead=S.Live-S.Dead,
+      S.Live_vs_S.wo=S.Live-S.wo,
+      S.Dead_vs_S.wo=S.Dead-S.wo,
+      S.pureLive_vs_S.pureDead=S.pureLive-S.pureDead,
+      S.Live_vs_S.pureLive=S.Live-S.pureLive,
+      S.Dead_vs_S.pureDead=S.Dead-S.pureDead,
+      
+      S.Live_vs_M.medium=S.Live-M.medium,
+      S.Dead_vs_M.medium=S.Dead-M.medium,
+      S.wo_vs_M.medium=S.wo-M.medium,
+      S.pureLive_vs_M.medium=S.pureLive-M.medium,
+      S.pureDead_vs_M.medium=S.pureDead-M.medium,
+      
+      
+      levels = colnames(design))
+    
+  }
+  
+  # contr.matrix <- makeContrasts(
+  #   CMCvsCTRL1=CMC-CTRL1,
+  #   N12vsCTR1L=N12-CTRL1,
+  #   levels = colnames(design))
+  # par(mfrow=c(1,2))
+  v <- voom(x, design, plot=TRUE)
+  vfit <- lmFit(v, design)
+  vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+  efit <- eBayes(vfit)#topTable
+  
+  
+  
+  plotSA(efit, main="Final model: Mean-variance trend")
+  
+  tfit <- treat(vfit, lfc=1)
+  dt <- decideTests(tfit,adjust.method = "none")
+  summary(dt)
+  
+  
+  DR_list=list()
+  for(i in colnames(tfit$coefficients)){
+    t=topTreat(tfit,coef = i,n=Inf)
+    DR_list[[i]]=t
+    # write.table(t,file = paste0(i,".txt"),sep = "\t",row.names = T,col.names = T,quote = F)
+    # xlsx::write.xlsx(t,file = "20220913_diffgene.xlsx",sheetName = i,append = T)
+  }
+  DR_list=lapply(DR_list,function(x){x$gene=rownames(x);return(x)})
+  
+  savelist[[cellline]][["gene"]]=DR_list
+  
+  
+}
+save(savelist,file = "single.paired.comp.RData")
+
+
+DR_list=lapply(savelist,function(x){x$gene})
+# names(DR_list)=gsub("with.*","",names(DR_list))
+names(DR_list)=c("","","bac")
+DR_list=do.call("c",DR_list)
+
+
+pdf(paste0(dataname0,"diffgene_valcano",".pdf"))
+for(i in c(names(DR_list))){
+  print(i)
+  # d=data.frame(p=p[,i],fc=fc[,i],updown=updown[,i])
+  t=DR_list[[i]]
+  d=data.frame(p=t$P.Value,fc=t$logFC,gene=t$gene)
+  
+  d$updown=0
+  d$updown[d$p<0.05&d$fc>0]=1
+  d$updown[d$p<0.05&d$fc<0]=-1
+  d$updown=factor(d$updown,levels = c(-1,0,1))
+  # d2=d[-log10(d$p)>10|abs(d$fc)>8,]
+  d2=d[d$p<0.05,]
+  # d2=d2[d2$gene%in%rownames(updown)[updown[,i]!=0],]
+  d2=d2[order(d2$fc),]
+  d2=rbind(head(d2,10),tail(d2,10))
+  t=ggplot(d,aes(fc,-log10(p),col=updown))+geom_point()+
+    # geom_point(d2,col="green")+
+    geom_text(data=d2,aes(label=gene),size=3)+
+    scale_color_manual(values = c("blue","grey","red"))+labs(title=i)
+  print(t)
+}
+dev.off()
+
+
+
+
+
+
+markerlist=DR_list
+
+load("~/human.gene2id.RData")
+
+
+library(biomaRt)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(org.Mm.eg.db)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(ggplot2)
+
+load("E:/databases/pathway_genesets/01_msigdb/20220428_msigdblist_human&mice.RData")#msigdb
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData") #hsa_kegg_list_des
+# used_pathway=c(hsa_kegg_list_des,msigdblist$c2_01_all_canonical_pathway)
+used_pathway=hsa_kegg_list_des
+names(used_pathway)=gsub(" - Homo sapiens \\(human\\)","",names(used_pathway))
+pathwaylist=data.frame(pathway=rep(names(used_pathway),sapply(used_pathway,length)),gene=do.call("c",used_pathway),stringsAsFactors = F)
+
+
+enrichfunciton=list()
+gsea_list=list()
+
+for(celltype in names(markerlist)){
+  print(celltype)
+  
+  m=markerlist[[celltype]]
+  genes=m[order(m$logFC,decreasing = T),]
+  geneList=genes$logFC
+  names(geneList)=rownames(genes)
+  gsea= GSEA(geneList, TERM2GENE = pathwaylist,pvalueCutoff = 1,pAdjustMethod = "BH")
+  # j="IL-17 signaling pathway"
+  # enrichplot::gseaplot2(gsea,geneSetID = j,title =j,color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2),pvalue_table = T)
+  
+  
+  gsea_list[[celltype]]=gsea
+  
+  m=m[m$P.Value<0.05,]
+  
+  for(j in c("high","low")){
+    print(j)
+    genes=rownames(m)[m$logFC>0]
+    if(j=="low"){
+      genes=rownames(m)[m$logFC<0]
+    }
+    
+    geneID=gene2id$ENTREZID[match(genes,gene2id$SYMBOL,nomatch=0)]
+    ego=enrichGO(gene = geneID, OrgDb = org.Hs.eg.db, ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+    ekegg <-enrichKEGG(gene = geneID, organism = 'hsa', pAdjustMethod = "BH", qvalueCutoff = 0.05)
+    
+    if(!is.null(ego)){
+      ego=ego@result[ego@result$pvalue<0.05,]
+      enrichfunciton[[celltype]][[j]][["ego"]]=ego
+    }
+    if(!is.null(ekegg)){
+      ekegg=ekegg@result[ekegg@result$pvalue<0.05,]
+      ekegg$genesymbol=sapply(ekegg$geneID,function(x){a=unlist(strsplit(x,"/"));b=gene2id$SYMBOL[match(a,gene2id$ENTREZID,nomatch = 0)];return(paste0(b,collapse = "/"))})
+      enrichfunciton[[celltype]][[j]][["ekegg"]]=ekegg
+      
+    }
+  }
+}
+
+
+functionlist=list(fun=enrichfunciton,gsea=gsea_list,gene=markerlist)
+save(functionlist,file = "functionlist.RData")
+
+t1=do.call("c",do.call("c",enrichfunciton))
+t2=lapply(gsea_list,function(x){x@result})
+names(t2)=paste0(names(t2),".gsea")
+t3=markerlist
+names(t3)=paste0(names(t3),".gene")
+t3=lapply(t3,function(x){x$gene=rownames(x);return(x)})
+t=c(t1,t2,t3)
+names(t)=gsub("Live","L",names(t))
+names(t)=gsub("Dead","D",names(t))
+
+writexl::write_xlsx(t,path = "function.xlsx")
+
+
+
+
+```
+
+
+```{r}
+
+savelist_nofilter=list()
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil","supernatantbac")){
+  print(cellline)
+  
+  if(cellline%in%c("cellwithneutrophil")){
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("T.Dead","T.Live","T.wo"),]
+  }else if(cellline%in%c("supernatantbac")){
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("S.Dead","S.Live","S.wo"),]
+  }else{
+    sampleinfo=sampleinfo0[sampleinfo0$group%in%c("M.medium","S.Dead","S.Live","S.pureDead","S.pureLive","S.wo"),]
+  }
+  data0=data00[,sampleinfo$sample]
+  
+  sampleinfo$group=droplevels(sampleinfo$group)
+  
+  
+  library(limma)
+  library(Glimma)
+  library(edgeR)
+  library(Mus.musculus)
+  
+  
+  data=data0
+  savelist_nofilter[[cellline]][["data0"]]=data0
+  data[is.na(data)]=0
+  x=DGEList(data)
+  group=sampleinfo$group
+  
+  x$samples$group=group
+  genesym=rownames(x)
+  # genes=select(Mus.musculus,keys=genesym,columns = c("ENTREZID","TXCHROM"),keytype = "SYMBOL")
+  # genes=genes[!duplicated(genes$SYMBOL),]
+  # x$genes=genes
+  
+  # x=x[,x$samples$group%in%c("CTRL1","CMC","N12")]
+  # group=x$samples$group
+  cpm <- cpm(x)
+  lcpm <- cpm(x, log=TRUE, prior.count=2)
+  
+  L <- mean(x$samples$lib.size) * 1e-6
+  M <- median(x$samples$lib.size) * 1e-6
+  c(L, M)
+  
+  table(rowSums(x$counts==0)==5)
+  
+  # keep.exprs <- filterByExpr(x, group=group)
+  # x <- x[keep.exprs,, keep.lib.sizes=FALSE]
+  
+  lcpm.cutoff <- log2(10/M + 2/L)
+  library(RColorBrewer)
+  nsamples <- ncol(x)
+  col <- brewer.pal(nsamples, "Paired")
+  par(mfrow=c(1,2))
+  plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+  title(main="A. Raw data", xlab="Log-cpm")
+  abline(v=lcpm.cutoff, lty=3)
+  for (i in 2:nsamples){
+    den <- density(lcpm[,i])
+    lines(den$x, den$y, col=col[i], lwd=2)
+  }
+  legend("topright", colnames(x), text.col=col, bty="n")
+  lcpm <- cpm(x, log=TRUE,prior.count=2)
+  plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+  title(main="B. Filtered data", xlab="Log-cpm")
+  abline(v=lcpm.cutoff, lty=3)
+  for (i in 2:nsamples){
+    den <- density(lcpm[,i])
+    lines(den$x, den$y, col=col[i], lwd=2)
+  }
+  legend("topright", colnames(x), text.col=col, bty="n")
+  
+  #归一化基因表达分布
+  x <- calcNormFactors(x, method = "TMM")
+  xexp=x
+  save(xexp,file = "xexp.RData")
+  lcpm <- cpm(x, log=TRUE,prior.count=2)
+  pdf(paste0(cellline,".normalized.pdf"))
+  boxplot(lcpm, las=2, col=col, main="")
+  title(main="Normalised data",ylab="Log-cpm")
+  
+  dev.off()
+  # save(lcpm,file = "lcpm.RData")
+  
+  lcpm <- cpm(x, log=TRUE)
+  savelist_nofilter[[cellline]][["lcpm"]]=lcpm
+  
+}
+save(savelist_nofilter,file = "savelist_nofilter.RData")
+
+
+```
+
+```{r}
+
+
+selectPath=list(GO=c("autophagy of nucleus","autophagosome assembly","autophagosome organization","response to starvation","endoplasmic reticulum unfolded protein response","autophagy of mitochondrion","regulation of G2/M transition of mitotic cell cycle","regulation of I-kappaB kinase/NF-kappaB signaling","replicative senescence","PERK-mediated unfolded protein response","vesicle coating","negative regulation of calcium ion transport into cytosol","vesicle budding from membrane","regulation of response to endoplasmic reticulum stress","regulation of lipid metabolic process","cholesterol homeostasis","immune response-regulating signaling pathway","regulation of lymphocyte differentiation","negative regulation of toll-like receptor signaling pathway","negative regulation of leukocyte activation","purine nucleoside monophosphate metabolic process","T cell apoptotic process","negative regulation of immune system process","negative regulation of cell activation","regulation of T cell activation"),
+                gsea.immuneActivate=c("Yersinia infection","Epstein-Barr virus infection","Salmonella infection","Shigellosis","NOD-like receptor signaling pathway","Fc gamma R-mediated phagocytosis","Natural killer cell mediated cytotoxicity","Phagosome","Endocytosis","Toll-like receptor signaling pathway","Legionellosis","Neutrophil extracellular trap formation","Antigen processing and presentation","Staphylococcus aureus infection","Lysosome"),
+                gsea.immuneSuppress=c("Pathways in cancer","Protein processing in endoplasmic reticulum","IL-17 signaling pathway","Apoptosis","JAK-STAT signaling pathway","Cellular senescence","T cell receptor signaling pathway","PD-L1 expression and PD-1 checkpoint pathway in cancer","HIF-1 signaling pathway","Ferroptosis"),
+                gsea.tumorcell=c("Epithelial cell signaling in Helicobacter pylori infection","Estrogen signaling pathway","Bacterial invasion of epithelial cells","Breast cancer","Signaling pathways regulating pluripotency of stem cells")
+                )
+pathwaydf=data.frame(pathway=do.call("c",selectPath),type=rep(names(selectPath),sapply(selectPath,length)))
+pathwaydf$pathway[pathwaydf$type%in%"GO"]=paste0("GO_",toupper(gsub(" ","_",pathwaydf$pathway[pathwaydf$type%in%"GO"])))
+
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData")
+gs1=hsa_kegg_list_des[names(hsa_kegg_list_des)%in%do.call("c",selectPath[grep("gsea",names(selectPath))])]
+
+load("E:/databases/pathway_genesets/01_msigdb/20220428_msigdblist_human&mice.RData")#msigdb
+showpath=paste0("GO_",toupper(gsub(" ","_",selectPath$GO)))
+showpath=showpath[!is.na(match(showpath,names(msigdblist$c5_06_GO_BP)))]
+gs_GO=msigdblist$c5_06_GO_BP[showpath]
+
+gs=c(gs1,gs_GO)
+
+load("single.paired.comp.RData")
+
+
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  data0=savelist[[cellline]]$data0
+  
+  
+  enrich.mat <- GSVA::gsva(expr = as.matrix(data0), gset.idx.list = gs, kcdf = "Poisson",method = "gsva", verbose = TRUE)
+  enrich.mat0=enrich.mat
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  annot_df_row=pathwaydf[match(rownames(enrich.mat0),pathwaydf$pathway),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=enrich.mat0
+  t=t(scale(t(t)))
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         left_annotation = anno_row,
+                         row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"pathway.activity.",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  
+  dev.off()
+  
+}
+
+load("single.paired.comp.RData")
+load("savelist_nofilter.RData")
+selectGene=list(immuneSuppress=c(paste0("IL17R",LETTERS[1:5]),"IL6R-AS1","PIK3CD-AS1","TNFRSF8","ATG7","MAPKAPK3","CISH","IL10RB","GSN-AS1","TRAF1","ETS2","CD274","FAM83C-AS1","IL6R-AS1","BDH1","ERCC1","DDX21","TRAF1","ATG7","MVD","HIVEP1","LAMB3","CSF1","IL1B","IL4R","NOS2","CD84","CXCL1","CXCR1","CXCL2","CXCR2","CXCL8","TREM1","CD274","CYBB","PDCD1LG2","SLC27A2"),
+                immuneActivate=c("TYROBP","ORAI3","TRPM2","PLD1","FLNA","GAB2","KIRREL2","SH2D3A","TLR2","NCF4","LCP2","TRAF1")
+)
+
+genedf=data.frame(gene=do.call("c",selectGene),type=rep(names(selectGene),sapply(selectGene,length)))
+genedf=genedf[!duplicated(genedf$gene),]
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  # data0=savelist[[cellline]]$lcpm
+  data0=savelist_nofilter[[cellline]]$lcpm
+  data0=data0[match(genedf$gene,rownames(data0),nomatch = 0),]
+  
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  annot_df_row=genedf[match(rownames(data0),genedf$gene),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=data0
+  t=t(scale(t(t)))
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         left_annotation = anno_row,
+                         row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"gene.activity.nofilter.",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  
+  dev.off()
+  
+}
+
+
+```
+
+```{r}
+
+showgenelist=list(tumorgene=c("EGFR","WNT7B","TGFA","MELK","MMP2","MMP9","CD44","ITGB1","BCL2L12","GLUT1","GLUT3","HIF1A","MKI67","CLDN3","CLDN4"),
+                  Neugene=c("MPO","ELANE","CXCR1","CXCR2","S100A8","S100A9")
+                  )
+genedf=data.frame(gene=do.call("c",showgenelist),type=rep(names(showgenelist),sapply(showgenelist,length)))
+
+
+load("X:/analyze_data/FEdata/yaobingqing/20250324_HumanNeu/01_together/lcpm.RData")
+data0=lcpm[match(tumorcellgene,rownames(lcpm),nomatch = 0),]
+
+library(ComplexHeatmap)
+annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+annot_df_col$group=droplevels(annot_df_col$group)
+column_color1=rainbow(length(levels(annot_df_col$group)))
+names(column_color1)=levels(annot_df_col$group)
+
+annot_df_row=genedf[match(rownames(data0),genedf$gene),"type",drop=F]
+# column_color2=rainbow(length(unique(annot_df_col$type2)))
+# names(column_color2)=unique(annot_df_col$type2)
+# column_color3=rainbow(length(unique(annot_df_col$mice)))
+# names(column_color3)=unique(annot_df_col$mice)
+
+anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+anno_row=rowAnnotation(df=annot_df_row)
+
+t=data0
+t=t(scale(t(t)))
+# t=scale(t)
+heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                       cluster_rows = T, 
+                       cluster_columns = T, 
+                       top_annotation = anno_col,# use_raster=T,
+                       column_split = annot_df_col$group ,
+                       left_annotation = anno_row,
+                       row_split = annot_df_row$type,
+                       # show_column_dend = F, show_row_dend = F, 
+                       clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                       # col=hmcols,
+                       #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                       row_km = 1)
+pdf(paste0(dataname0,"gene.activity.tumorgene.",".pdf"),width = 15)
+print(heatmap_matrix)
+
+dev.off()
+
+
+```
+
+```{r}
+##20250403
+
+
+go=c("regulation of lipid metabolic process","negative regulation of leukocyte activation","purine nucleoside monophosphate metabolic process")
+kegg=c("Pathways in cancer","Protein processing in endoplasmic reticulum","IL-17 signaling pathway","Apoptosis","JAK-STAT signaling pathway","T cell receptor signaling pathway","PD-L1 expression and PD-1 checkpoint pathway in cancer","HIF-1 signaling pathway","Ferroptosis")
+
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData")
+gs1=hsa_kegg_list_des[names(hsa_kegg_list_des)%in%kegg]
+
+load("E:/databases/pathway_genesets/01_msigdb/20220428_msigdblist_human&mice.RData")#msigdb
+showpath=paste0("GO_",toupper(gsub(" ","_",go)))
+showpath=showpath[!is.na(match(showpath,names(msigdblist$c5_06_GO_BP)))]
+gs_GO=msigdblist$c5_06_GO_BP[showpath]
+
+gs=c(gs1,gs_GO)
+
+
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  data0=savelist[[cellline]]$data0
+  data0=data0[,grep("Hu2_|Hu1_",colnames(data0),invert = T)]#
+  
+  enrich.mat <- GSVA::gsva(expr = as.matrix(data0), gset.idx.list = gs, kcdf = "Poisson",method = "gsva", verbose = TRUE)
+  enrich.mat0=enrich.mat
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  # annot_df_row=pathwaydf[match(rownames(enrich.mat0),pathwaydf$pathway),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  # anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=enrich.mat0
+  t=t(scale(t(t)))
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         # left_annotation = anno_row,
+                         # row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"pathway.activity2.",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  dev.off()
+  
+}
+
+genes=c("BDH1","IL10RB","TNFRSF8","CYBB","CXCL2","TRAF1","LAMB3","CSF1","HIVEP1","TREM1","CXCL8","IL1B","MVD","CD274","IL4R","IL17RA","CXCL1","CISH")
+load("savelist_nofilter.RData")
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  # data0=savelist[[cellline]]$lcpm
+  data0=savelist_nofilter[[cellline]]$lcpm
+  data0=data0[,grep("Hu2_|Hu1_",colnames(data0),invert = T)]#
+  data0=data0[match(genes,rownames(data0),nomatch = 0),]
+  # data0=data0[match(genedf$gene,rownames(data0),nomatch = 0),]
+  
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  # annot_df_row=genedf[match(rownames(data0),genedf$gene),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  # anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=data0
+  t=t(scale(t(t)))
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         # left_annotation = anno_row,
+                         # row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"gene.activity.nofilter2.",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  
+  dev.off()
+  
+}
+
+
+
+```
+
+##20250409
+```{r}
+
+go=c("PERK-mediated unfolded protein response","regulation of response to endoplasmic reticulum stress","regulation of lipid metabolic process","negative regulation of leukocyte activation","purine nucleoside monophosphate metabolic process")
+kegg=c("Pathways in cancer","Protein processing in endoplasmic reticulum","IL-17 signaling pathway","Apoptosis","JAK-STAT signaling pathway","PD-L1 expression and PD-1 checkpoint pathway in cancer","HIF-1 signaling pathway","Ferroptosis")
+
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData")
+gs1=hsa_kegg_list_des[names(hsa_kegg_list_des)%in%kegg]
+
+load("E:/databases/pathway_genesets/01_msigdb/20220428_msigdblist_human&mice.RData")#msigdb
+showpath=paste0("GO_",toupper(gsub(" ","_",go)))
+showpath=gsub("-","_",showpath)
+showpath=showpath[!is.na(match(showpath,names(msigdblist$c5_06_GO_BP)))]
+# showpath=showpath[!is.na(match(showpath,names(msigdblist$c5.ontology)))]
+gs_GO=msigdblist$c5_06_GO_BP[showpath]
+
+gs=c(gs1,gs_GO)
+
+
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  data0=savelist[[cellline]]$data0
+  data0=data0[,grep("Hu2_",colnames(data0),invert = T)]#|Hu1_|Hu10_
+  # data0=data0[,grep("Hu2_|Hu1_",colnames(data0),invert = T)]#
+  
+  enrich.mat <- GSVA::gsva(expr = as.matrix(data0), gset.idx.list = gs, kcdf = "Poisson",method = "gsva", verbose = TRUE)
+  enrich.mat0=enrich.mat
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  # annot_df_row=pathwaydf[match(rownames(enrich.mat0),pathwaydf$pathway),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  # anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=enrich.mat0
+  t=t(scale(t(t)))
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         # left_annotation = anno_row,
+                         # row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"pathway.activity4.",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  dev.off()
+  
+}
+
+genes=c("AQP9","BCL2A1","CCL18","CCL20","CD300E","CTSC","CXCL1","CXCL2","CXCL3","CXCL5","CXCL6","CXCR1","CXCR2","EMR2","EMR3","FGR","FPR1","FPR2","GPR97","HCK","HK3","ICAM1","IL15RA","IL1B","IL1R2","IL2RA","IL6","IL8","LILRA3","LILRA5","LILRA6","LIRRB2","LIRRB3","LYN","MEFV","MMP12","NCF2","OSM","PLAUR","PTAFR","S100A12","S100A8","S100A9","SLC11A1","TREM1","CD300ld","CD300Id","CD84","LOX-1","Arg1","Arg2","FATP2","IL6","NOX2","PTGS2","TNFA","MMP8","BDH1","IL10RB","TNFRSF8","CYBB","CXCL2","TRAF1","LAMB3","CSF1","HIVEP1","TREM1","CXCL8","IL1B","MVD","CD274","IL4R","IL17RA","CXCL1","CISH")
+genes=unique(genes)
+genes=setdiff(genes,c("IL6","IL15RA","CXCL6","CXCL3","CCL20","IL2RA","LILRA6","LYN","LILRA5","HK3"))
+load("savelist_nofilter.RData")
+for(cellline in c("cellwithneutrophil","supernatantwithneutrophil")){
+  print(cellline)
+  
+  # data0=savelist[[cellline]]$lcpm
+  data0=savelist_nofilter[[cellline]]$lcpm
+  data0=data0[,grep("Hu2_|Hu1_|Hu10_",colnames(data0),invert = T)]#
+  data0=data0[match(genes,rownames(data0),nomatch = 0),]
+  # data0=data0[match(genedf$gene,rownames(data0),nomatch = 0),]
+  
+  library(ComplexHeatmap)
+  annot_df_col=sampleinfo0[match(colnames(data0),sampleinfo0$sample),c("LiveDead","group")]
+  annot_df_col$group=droplevels(annot_df_col$group)
+  column_color1=rainbow(length(levels(annot_df_col$group)))
+  names(column_color1)=levels(annot_df_col$group)
+  
+  # annot_df_row=genedf[match(rownames(data0),genedf$gene),"type",drop=F]
+  # column_color2=rainbow(length(unique(annot_df_col$type2)))
+  # names(column_color2)=unique(annot_df_col$type2)
+  # column_color3=rainbow(length(unique(annot_df_col$mice)))
+  # names(column_color3)=unique(annot_df_col$mice)
+  
+  anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color1))
+  # anno_row=rowAnnotation(df=annot_df_row)
+  
+  t=data0
+  t=t(scale(t(t)))
+  t=t[!is.na(t[,1]),]
+  # t=scale(t)
+  heatmap_matrix=Heatmap(as.matrix(t), #name = "scaledata", 
+                         cluster_rows = T, 
+                         cluster_columns = T, 
+                         top_annotation = anno_col,# use_raster=T,
+                         column_split = annot_df_col$group ,
+                         # left_annotation = anno_row,
+                         # row_split = annot_df_row$type,
+                         # show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         # col=hmcols,
+                         #column_dend_height = unit(40, "mm"),#row_names_gp = gpar(fontsize=10),
+                         row_km = 1)
+  pdf(paste0(dataname0,"gene.activity.nofilter.rm1.2.10",cellline,".pdf"),width = 10,height = 10)
+  print(heatmap_matrix)
+  
+  dev.off()
+  
+}
+
+
+
+
+##lancet
+
+
+
+library(survminer)
+
+lancet_2005=read.table("E:/course/paper/from20200601/survival_prognosis_computing_nature.NEJM/2005.lancet.286patient/exp.txt",
+                       header = T,sep = "\t",quote = "")
+clinical0=read.table("E:/course/paper/from20200601/survival_prognosis_computing_nature.NEJM/2005.lancet.286patient/clinical.txt",
+                     header = T,sep = "\t",quote = "")
+clinical0$time_to_relapse_or_last_follow.up_months=clinical0$time_to_relapse_or_last_follow.up_months/12
+
+GPL96=read.table("E:/SHJ/20200417_array_bone_metastasis/series_matrix/GPL96-57554.txt",header = T,as.is = T,sep = "\t",quote = "")
+GPL96=GPL96[GPL96$Gene.Symbol!="",]
+GPL96=GPL96[!grepl("[/]",GPL96$Gene.Symbol),]
+exp=aggregate(lancet_2005[,2:ncol(lancet_2005)],by=list(gene=GPL96$Gene.Symbol[match(lancet_2005$ID_REF,GPL96$ID)]),max)
+rownames(exp)=exp$gene
+exp=exp[,-1]
+exp=log(exp)
+exp=exp[,clinical0$GEO_asscession_number]
+
+
+TF_target_list_to_hs=readRDS("E:/databases/TF_target/20210615_TF_target_list_human.rds")
+
+
+
+
+library(survminer)
+
+lancet_2005=read.table("E:/course/paper/from20200601/survival_prognosis_computing_nature.NEJM/2005.lancet.286patient/exp.txt",
+                       header = T,sep = "\t",quote = "")
+clinical0=read.table("E:/course/paper/from20200601/survival_prognosis_computing_nature.NEJM/2005.lancet.286patient/clinical.txt",
+                     header = T,sep = "\t",quote = "")
+GPL96=read.table("E:/SHJ/20200417_array_bone_metastasis/series_matrix/GPL96-57554.txt",header = T,as.is = T,sep = "\t",quote = "")
+GPL96=GPL96[GPL96$Gene.Symbol!="",]
+GPL96=GPL96[!grepl("[/]",GPL96$Gene.Symbol),]
+exp=aggregate(lancet_2005[,2:ncol(lancet_2005)],by=list(gene=GPL96$Gene.Symbol[match(lancet_2005$ID_REF,GPL96$ID)]),max)
+rownames(exp)=exp$gene
+exp=exp[,-1]
+exp=log(exp)
+exp=exp[,clinical0$GEO_asscession_number]
+
+
+
+pdf("lancet_2005_replase_surv.pdf")
+for(gene0 in c(names(gs))){#,"CD200","PCSK9","SERPINB9","SLC6A1","BCL11B","VDR","SLC6A2",'TSC22D1'
+  print(gene0)
+  gene=gs[[gene0]]
+  expdata=exp
+  clinical=clinical0
+  genetmp=gene[gene%in%rownames(expdata)]
+  if(sum(genetmp%in%rownames(expdata))==0){next()}
+  # genetmp=TF_target_list_to_hs$encode[[gene]][TF_target_list_to_hs$encode[[gene]]%in%rownames(expdata)]
+  
+  clinical$score=apply(expdata[genetmp,,drop=F],2,mean)
+  # clinical=clinical[clinical$ER_Status=="ER+",]
+  
+  res.cut=surv_cutpoint(clinical,time = "time_to_relapse_or_last_follow.up_months",event="relapse_1_True",variables = "score")
+  res.cat=surv_categorize(res.cut)
+  fit=survfit(as.formula(paste0('Surv(time_to_relapse_or_last_follow.up_months, relapse_1_True=="1") ~',"score")), data = res.cat)
+  p1=ggsurvplot(
+    fit,                     # survfit object with calculated statistics.
+    data = res.cat,             # data used to fit survival curves.
+    risk.table = TRUE,       # show risk table.
+    pval = TRUE,             # show p-value of log-rank test.
+    # conf.int = TRUE,         # show confidence intervals for 
+    # point estimates of survival curves.
+    # xlim = x_limit,        # present narrower X axis, but not affect
+    # survival estimates.
+    xlab = "Time in years",   # customize X axis label.
+    # break.time.by = break.time.by,     # break X axis in time intervals by 500.
+    # ggtheme = theme_light(), # customize plot and risk table with a theme.
+    # risk.table.y.text.col = T, # colour risk table text annotations.
+    risk.table.y.text = FALSE # show bars instead of names in text annotations
+    # in legend of risk table
+  )+labs(title=paste(gene0,sep = "_"))
+  
+  print(p1)
+  
+  for(type in c("ER-","ER+")){
+    t=clinical[clinical$ER_Status%in%type,]
+    res.cut=surv_cutpoint(t,time = "time_to_relapse_or_last_follow.up_months",event="relapse_1_True",variables = "score")
+    res.cat=surv_categorize(res.cut)
+    fit=survfit(as.formula(paste0('Surv(time_to_relapse_or_last_follow.up_months, relapse_1_True=="1") ~',"score")), data = res.cat)
+    p1=ggsurvplot(
+      fit,                     # survfit object with calculated statistics.
+      data = res.cat,             # data used to fit survival curves.
+      risk.table = TRUE,       # show risk table.
+      pval = TRUE,             # show p-value of log-rank test.
+      # conf.int = TRUE,         # show confidence intervals for 
+      # point estimates of survival curves.
+      # xlim = x_limit,        # present narrower X axis, but not affect
+      # survival estimates.
+      xlab = "Time in years",   # customize X axis label.
+      # break.time.by = break.time.by,     # break X axis in time intervals by 500.
+      # ggtheme = theme_light(), # customize plot and risk table with a theme.
+      # risk.table.y.text.col = T, # colour risk table text annotations.
+      risk.table.y.text = FALSE # show bars instead of names in text annotations
+      # in legend of risk table
+    )+labs(title=paste(gene0,type,sep = "_"))
+    
+    print(p1)
+  }
+}
+dev.off()
+
+
+```
+
+
+```{r}
+# siggene_list=lapply(names(DR_list),function(x){a=updown[,x];b=rownames(updown)[a!=0];DR_list[[x]][b,]})
+siggene_list=lapply(DR_list,function(x){x[x$P.Value<0.05,]})
+names(siggene_list)=names(DR_list)
+siggene_list=lapply(siggene_list,function(x){x$gene=rownames(x);return(x)})
+writexl::write_xlsx(siggene_list,path = "siggene_list.xlsx")
+up1=siggene_list$N12_vs_CTRL23[siggene_list$N12_vs_CTRL23$logFC>0,]
+down1=siggene_list$N12_vs_CTRL23[siggene_list$N12_vs_CTRL23$logFC<0,]
+
+# up1=siggene_list$PCDH_vs_CTRL23[siggene_list$PCDH_vs_CTRL23$logFC>0,]
+# down1=siggene_list$PCDH_vs_CTRL23[siggene_list$PCDH_vs_CTRL23$logFC<0,]
+
+up2=siggene_list$NFK_vs_PCDH[siggene_list$NFK_vs_PCDH$logFC>0,]
+down2=siggene_list$NFK_vs_PCDH[siggene_list$NFK_vs_PCDH$logFC<0,]
+
+rescued=list(up=intersect(rownames(up1),rownames(down2)),down=intersect(rownames(down1),rownames(up2)))
+genes_to_show=do.call("c",rescued)
+
+pdf("rescued_gene.pdf")
+for(gene in c(genes_to_show)){
+  df=data.frame(exp=lcpm[gene,],groups=group)
+  p=ggplot(df,aes(group,exp,fill=groups))+geom_boxplot()+geom_point()+
+    ggpubr::stat_compare_means(comparisons = as.list(data.frame(combn(levels(df$groups),2))),method = "t.test")+
+    theme_classic()+labs(title = gene)
+  print(p)
+}
+dev.off()
+
+d=lcpm[genes_to_show,]
+d=t(scale(t(d)))
+
+
+annot_df_col=data.frame(celltype=sampleinfo$type)
+annot_df_col$celltype=factor(annot_df_col$celltype,levels = c(levels(group)))
+# column_col=colpalettes[1:3]
+annol_col=HeatmapAnnotation(df=annot_df_col)
+pdf("rescued.gene.pdf")
+Heatmap(d, name = "scaledata", cluster_rows = T, cluster_columns = F, use_raster=T,
+        column_split = annot_df_col$celltype,
+        top_annotation = annol_col,
+        show_column_dend = T, show_row_dend = F,
+        clustering_distance_rows='euclidean', show_row_names = T,show_column_names = F,
+        # col =col_fun,
+        column_dend_height = unit(40, "mm"),
+        row_km = 1)
+dev.off()
+
+
+```
+
+
+```{r}
+library(gplots)
+g=unique(do.call("c",lapply(DR_list[1:7],function(x){head(rownames(x),10)})))
+mycol <- colorpanel(1000,"blue","white","red")
+pdf(paste0(dataname0,"heatmap",".pdf"))
+heatmap.2(lcpm[g,], scale="row",
+          # labRow=v$genes$SYMBOL[g],
+          labCol=group,
+          col=mycol, trace="none", density.info="none", 
+          # margin=c(8,6), lhei=c(2,10),
+          dendrogram="column")
+
+
+library(ComplexHeatmap)
+annot_df_col=x$samples
+column_color2=rainbow(length(unique(annot_df_col$group)))
+names(column_color2)=levels(annot_df_col$group)
+anno_col=HeatmapAnnotation(df=annot_df_col,col=list(group=column_color2))
+
+t=t(scale(t(lcpm[g,])))
+heatmapresult=Heatmap(t, name = "scaledata", 
+                      cluster_rows = T, 
+                      cluster_columns = T, 
+                      top_annotation = anno_col, use_raster=T,
+                      # column_split = annot_df_col$type,
+                      # row_split= max_ind,
+                      # left_annotation = anno_row,
+                      show_column_dend = F, show_row_dend = F, 
+                      clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                      # col=hmcols,
+                      #column_dend_height = unit(40, "mm"),#
+                      row_names_gp = gpar(fontsize=3),
+                      row_km = 1)
+heatmapresult
+dev.off()
+```
+
+```{r}
+load("E:/databases/pathway_genesets/Msigdb/20220414_Msigdb.RData")
+idx=ids2indices(Mm.Msigdb_sym$c2,rownames(v))
+cam_list=list()
+for(i in 1){
+  
+  cam=camera(v,idx,design = design,contrast = contr.matrix[,i])
+  cam=cbind(data.frame(path=rownames(cam)),cam)
+  cam_list[[colnames(contr.matrix)[i]]]=cam
+  # write.table(cam,file =paste0(dataname0,"pathway",colnames(contr.matrix)[i],".txt"),sep = "\t",col.names = T,row.names = T,quote = F)
+}
+writexl::write_xlsx(cam_list,path = '20230814_pathway_gsea.xlsx')
+save(cam_list,file = "cam_list.RData")
+# load("cam_list.RData")
+cam_list=lapply(cam_list,function(x){x$path=tolower(x$path);return(x)})
+writexl::write_xlsx(cam_list,path = '20230814_pathway_gsea.xlsx')
+
+barcodeplot(efit$t[,1], index=idx$KEGG_GLYCOLYSIS_GLUCONEOGENESIS, 
+            main=colnames(contr.matrix)[1])
+
+
+```
+
+```{r}
+geneset=do.call("c",Mm.Msigdb_sym)
+pathwaylist=data.frame(pathway=rep(names(geneset),sapply(geneset,length)),gene=do.call("c",geneset),stringsAsFactors = F)
+gsea_list=list()
+
+load("DR_list.RData")
+for(i in names(DR_list)){
+  print(i)
+  gene=DR_list[[i]]
+  
+  geneList=gene$logFC
+  names(geneList)=rownames(gene)
+  geneList=sort(geneList,decreasing = T)
+  gsea= GSEA(geneList, TERM2GENE = pathwaylist)
+  gsea_list[[i]]=gsea
+}
+
+save(gsea_list,file = "gsea_list.RData")
+
+t=lapply(gsea_list,function(x){x@result})
+t=lapply(t,function(x){x$Description=tolower(x$Description);return(x)})
+writexl::write_xlsx(t,path = "gsea.xlsx")
+
+```
+
+#enrich kegg go
+```{r}
+load("DR_list.RData")
+markerlist=lapply(DR_list,function(x){x[x$P.Value<0.05,]})
+enrichfunciton=list()
+for(i in names(markerlist)){
+  print(i)
+  
+  for(j in c("high","low")){
+    print(j)
+    t=markerlist[[i]]
+    genes=rownames(t)[t$logFC>0]
+    if(j=="low"){
+      genes=rownames(t)[t$logFC<0]
+    }
+    
+    geneID=gene2id$ENTREZID[match(genes,gene2id$SYMBOL,nomatch=0)]
+    ego=enrichGO(gene = geneID, OrgDb = org.Mm.eg.db, ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+    ekegg <-enrichKEGG(gene = geneID, organism = 'mmu', pAdjustMethod = "BH", qvalueCutoff = 0.05)
+    
+    if(!is.null(ego)){
+      ego=ego@result[ego@result$pvalue<0.05,]
+      enrichfunciton[[i]][[j]][["ego"]]=ego
+    }
+    if(!is.null(ekegg)){
+      ekegg=ekegg@result[ekegg@result$pvalue<0.05,]
+      ekegg$genesymbol=sapply(ekegg$geneID,function(x){a=unlist(strsplit(x,"/"));b=gene2id$SYMBOL[match(a,gene2id$ENTREZID,nomatch = 0)];return(paste0(b,collapse = "/"))})
+      enrichfunciton[[i]][[j]][["ekegg"]]=ekegg
+      
+    }
+  }
+}
+save(enrichfunciton,file = "enrichfunciton.RData")
+t=do.call("c",lapply(enrichfunciton,function(x){do.call("c",x)}))
+writexl::write_xlsx(t,path = "enrichfunction.xlsx")
+
+
+```
+
+```{r}
+ah = AnnotationHub::AnnotationHub()
+# sort(unique(ah$dataprovider))
+# sort(unique(ah$species))
+# head(unique(ah$species))
+mdb=query(ah,c("KEGG","Mus musculus"))
+mdb2=query(ah,c("GeneOntology"))
+df=mcols(mdb)
+df2=mcols(mdb2)
+meta_graph_info_mmu=mdb[["AH60905"]]
+pmgi_mmu_genes=mdb[["AH60910"]]
+pmgi_mmu_GO=mdb[["AH60911"]]
+go_bp_frame_v2=mdb2[["AH69109"]]
+allkegg=unique(meta_graph_info_mmu$all.labelids[,"path.name"])
+allGOBP=unique(go_bp_frame_v2$name)
+load("F:/Edata/dongtingting/20220913_RNAseq/enrichfunciton.RData")
+for(db in c("go","kegg")){
+  print(db)
+  for(type in c("high","low")){
+    
+    single=xlsx::read.xlsx("E:/YaoBingQing/20200709_singlecell/enriched_pathway/singlecell_enriched_pathway.xlsx",sheetName = paste0(db,"_",type))
+    single=single[single$Cluster%in%"Staph",]
+    
+    for(comp in names(enrichfunciton)){
+      crispr=enrichfunciton[[comp]][[type]][[paste0("e",db)]]
+      a=intersect(single$Description,crispr$Description)
+      # xlsx::write.xlsx(a,file = "F:/Edata/dongtingting/20220913_RNAseq/20221026_single_crispr_intersection.xlsx",sheetName =paste0(db,"_single_",type,"_",comp) ,append = T)
+      
+      p=1
+      if(db=="kegg"){
+        p=hyperTest(gene1 = single$Description,gene2 = crispr$Description,backgroundGenes = union(allkegg,c(single$Description,crispr$Description)))
+        
+      }else{
+        p=hyperTest(gene1 = single$Description,gene2 = crispr$Description,backgroundGenes = union(allGOBP,c(single$Description,crispr$Description)))
+        
+      }
+      VennDiagram::venn.diagram(
+        x = list(single=single$Description,crispr=crispr$Description),
+        # category.names = c(LETTERS[1:4]),
+        filename = paste0(paste0(db,"_single_",type,"_",comp),".tiff"),
+        output=TRUE,
+        fill = c("brown","darkblue"),
+        main=paste0(db,"_single_",type,"_",comp),
+        main.cex = 0.8,
+        sub=paste0("pvalue: ",round(p,digits = 3)),
+        sub.cex = 0.7
+      )
+    }
+    
+    
+  }
+  
+}
+
+
+```
+
+pdf("function.pdf")
+for(i in c("CTRL1 VS CTRL","Nfkb2KO VS CTRL")){
+  print(i)
+  t=xlsx::read.xlsx("F:/Edata/dongtingting/20220913_RNAseq/20221122-selected signaling pathway analyze.xlsx",sheetName = i)
+  t$P2=-log10(t$PValue)
+  t$P2[t$Direction=="Down"]=-1*t$P2[t$Direction=="Down"]
+  t=t[order(t$Direction,t$P2),]
+  t$path=paste0(t$path," (",t$NGenes,")")
+  
+  t$path=factor(t$path,levels = t$path[!duplicated(t$path)])
+  p1=ggplot(t,aes(P2,path,fill=NGenes))+geom_bar(stat = "identity")+theme_classic()+
+    labs(x="log10Pvalue",y="",title = i)+
+    scale_fill_continuous(high="red",low="blue")
+  p2=ggplot(t,aes(P2,path))+geom_bar(stat = "identity")+theme_classic()+
+    labs(x="log10Pvalue",y="",title = i)
+  
+  t$NGenes[t$Direction=="Down"]=-1*t$NGenes[t$Direction=="Down"]
+  t=t[order(t$Direction,t$NGenes),]
+  t$P2=abs(t$P2)
+  t$path=factor(as.character(t$path),levels = as.character(t$path[!duplicated(t$path)]))
+  p3=ggplot(t,aes(NGenes,path,fill=P2))+geom_bar(stat = "identity")+theme_classic()+
+    labs(x="NGenes",y="",title = i)+
+    scale_fill_continuous(high="red",low="blue")
+  p4=ggplot(t,aes(NGenes,path))+geom_bar(stat = "identity")+theme_classic()+
+    labs(x="NGenes",y="",title = i)
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+}
+dev.off()
+
+
+
+
+library(survminer)
+library(survival)
+load("E:/publicdata/TCGA_BRCA/metabric_TCGA_BRCA.exp.clinical.RData")
+load("E:/databases/mm10_geneloc/20210422_human2mice.RData")#human2mice gene symbol conversion
+
+load("~/human.gene2id.RData")
+load("F:/Edata/dongtingting/20220913_RNAseq/DR_list.RData")
+gs=list(NFKB2singlegene="NFKB2",N12vsCTRL=DR_list$N12vsCTRL)
+load("F:/Edata/dongtingting/20220913_RNAseq/ctrl1/DR_list.RData")
+gs$N12vsCTRL1=DR_list$N12vsCTR1L
+gs0=gs
+gs=lapply(gs0,function(x){if(class(x)=="data.frame"){x$SYMBOL[x$adj.P.Val<0.05]}else{return(x)}})#adj.P.Val,P.Value
+
+gs=lapply(gs,toupper)
+gs$intersection=intersect(gs$N12vsCTRL1,gs$N12vsCTRL)
+
+
+surv_df=matrix(0,ncol = 6)
+colnames(surv_df)=c("cancertype","pathway","eventype","pval","tenratehigh","tenratelow")
+
+pdf("BRCA_NFKB2_survival.pdf")
+for(geneset in names(gs)){
+  gene=gs[[geneset]]
+  print(geneset)
+  for(db in names(survival_datalist$exp)){
+    print(db)
+    expdata=survival_datalist$exp[[db]]
+    clinical=survival_datalist$clinical[[db]]
+    genetmp=gene[gene%in%rownames(expdata)]
+    clinical$score=apply(expdata[genetmp,,drop=F],2,mean)
+    clinical=clinical[clinical$time>0,]
+    
+    res.cut=surv_cutpoint(clinical,time = "time",event="event",variables = "score")
+    res.cat=surv_categorize(res.cut)
+    fit=survfit(as.formula(paste0('Surv(time, event=="1") ~',"score")), data = res.cat)
+    p1=ggsurvplot(
+      fit,                     # survfit object with calculated statistics.
+      data = res.cat,             # data used to fit survival curves.
+      risk.table = TRUE,       # show risk table.
+      pval = TRUE,             # show p-value of log-rank test.
+      xlab = "Time in years",   # customize X axis label.
+      risk.table.y.text = FALSE # show bars instead of names in text annotations
+    )+labs(title=paste(geneset,db,sep = "_"))
+    
+    print(p1)
+    
+    p=unicox(surv=res.cat)
+    a=p1$data.survplot[p1$data.survplot$score=="high",]
+    tenratehigh=a$surv[which.min(abs(a$time-10))]
+    a=p1$data.survplot[p1$data.survplot$score=="low",]
+    tenratelow=a$surv[which.min(abs(a$time-10))]
+    # alleventp=c()
+    surv_df=rbind(surv_df,c(db,geneset,"OS",p$pvalue,signif(tenratehigh,3),signif(tenratelow,3)))
+    
+    for(subtype in levels(clinical$PAM50)){
+      t=clinical[clinical$PAM50%in%subtype,]
+      res.cut=surv_cutpoint(t,time = "time",event="event",variables = "score")
+      res.cat=surv_categorize(res.cut)
+      fit=survfit(as.formula(paste0('Surv(time, event=="1") ~',"score")), data = res.cat)
+      p1=ggsurvplot(
+        fit,                     # survfit object with calculated statistics.
+        data = res.cat,             # data used to fit survival curves.
+        risk.table = TRUE,       # show risk table.
+        pval = TRUE,             # show p-value of log-rank test.
+        xlab = "Time in years",   # customize X axis label.
+        risk.table.y.text = FALSE # show bars instead of names in text annotations
+      )+labs(title=paste(geneset,db,subtype,sep = "_"))
+      
+      print(p1)
+      
+      p=unicox(surv=res.cat)
+      a=p1$data.survplot[p1$data.survplot$score=="high",]
+      tenratehigh=a$surv[which.min(abs(a$time-10))]
+      a=p1$data.survplot[p1$data.survplot$score=="low",]
+      tenratelow=a$surv[which.min(abs(a$time-10))]
+      # alleventp=c()
+      surv_df=rbind(surv_df,c(paste0(db,"_",subtype),geneset,"OS",p$pvalue,signif(tenratehigh,3),signif(tenratelow,3)))
+      
+    }
+  }
+  
+}
+dev.off()
+
+surv_df=surv_df[-1,]
+surv_df=as.data.frame(surv_df)
+surv_df$pval=as.numeric(surv_df$pval)
+surv_df$tenratehigh=as.numeric(surv_df$tenratehigh)
+surv_df$tenratelow=as.numeric(surv_df$tenratelow)
+surv_df$highlow=surv_df$tenratehigh>surv_df$tenratelow
+
+t=surv_df
+t=t%>%filter(pval<0.05)
+t$pathway=factor(t$pathway,levels = names(gs))
+t$pathway=droplevels(t$pathway)
+p=ggplot(t,aes(pathway,cancertype))+
+  geom_point(aes(size=-log(pval),color=highlow))+
+  # scale_color_gradient2(low = "blue",high = "red",midpoint = -log(0.05))+
+  facet_wrap(~eventype,scales = "free")+
+  theme_classic()+#labs(title=gsub("surv_df_|.RData","",i))+
+  theme(axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0.5))
+pdf("BRCA_surv_dot.pdf")
+print(p)
+dev.off()
+
+
+
+library(tidyr)
+library(UpSetR)
+
+crispr=read.table("E:/DongTingTing/20210923/gene_sig_2_sgRNA_filter_20220105.txt",header = T)
+
+single=read.table("E:/YaoBingQing/20200709_singlecell/staph.gene.txt",header = T)
+single=single[single$p_val<0.05,]
+
+gs=list(schigh=rownames(single)[single$avg_log2FC>0],sclow=rownames(single)[single$avg_log2FC<0],
+        pos=crispr$gene[crispr$log2FoldChange>0],neg=crispr$gene[crispr$log2FoldChange<0]
+)
+VennDiagram::venn.diagram(gs,filename = "tmp.jpg")
+b=fromList(gs)
+pdf("gene.intersection.pdf")
+upset(b,sets=colnames(b),set_size.show = T)
+dev.off()
+t=do.call("c",gs)[!duplicated(do.call("c",gs))]
+rownames(b)=t
+b$entry=rownames(b)
+
+
+data_with_intersection <- b %>%
+  unite(col = "intersection", -c("entry"), sep = "")
+
+data_with_intersection %>%
+  group_by(intersection) %>%
+  summarise(list = list(entry)) %>%
+  mutate(list = setNames(list, intersection)) %>%
+  pull(list)
+
+for(i in names(table(data_with_intersection$intersection))){
+  t=colnames(b)[1:4][unlist(strsplit(i,""))=="1"]
+  print(t)
+  xlsx::write.xlsx(data.frame(gene=data_with_intersection$entry[data_with_intersection$intersection==i]),file = "scRNA_intersect_crispr.xlsx",sheetName = paste(t,collapse = "_"),append = T)
+}
+
+genesummary_show=crispr
+
+pdf("crispr.single.intersection.pdf")
+for(i in names(table(data_with_intersection$intersection))){
+  print(i)
+  t=colnames(b)[1:4][unlist(strsplit(i,""))=="1"]
+  if(length(t)==1){next()}
+  print(t)
+  gene=data_with_intersection$entry[data_with_intersection$intersection==i]
+  p1=ggplot(genesummary_show,aes(x=log2FoldChange,y=-log10(pvalue)))+geom_point()+
+    geom_point(data=genesummary_show[genesummary_show$gene%in%gene,],col="red")+
+    theme_classic()+labs(title = paste(t,collapse = "_"))
+  p2=ggplot(genesummary_show,aes(x=log2FoldChange,y=-log10(pvalue)))+geom_point(col="grey")+
+    geom_point(data=genesummary_show[genesummary_show$gene%in%gene,],col="red")+
+    geom_text(data=genesummary_show[genesummary_show$gene%in%c(gene),],aes(label=gene))+
+    theme_classic()+labs(title = paste(t,collapse = "_"))
+  print(p1)
+  print(p2)
+}
+dev.off()
+
+
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData")
+virus_list=mmu_kegg_list_des[grep("virus",names(mmu_kegg_list_des),ignore.case = T)]
+
+gene=unique(do.call("c",virus_list))
+d=genesummary_show[genesummary_show$gene%in%gene,]
+p1=ggplot(d,aes(x=log2FoldChange,y=-log10(pvalue)))+geom_point(col="grey")+
+  geom_point()+
+  geom_text(aes(label=gene))+
+  theme_classic()+labs(title = paste(t,collapse = "_"))
+p2=ggplot(d,aes(x=log2FoldChange,y=-log10(pvalue)))+geom_point(col="grey")+
+  geom_point()+
+  # geom_text(aes(label=gene))+
+  theme_classic()+labs(title = paste(t,collapse = "_"))
+pdf("virus_gene_intersect_crispr.pdf")
+p1
+p2
+dev.off()
+
+
+crispr=read.table("E:/DongTingTing/20210923/gene_sig_2_sgRNA_filter_20220105.txt",header = T)
+genesummary_show=crispr
+crisprpathway=xlsx::read.xlsx("E:/DongTingTing/20210923/20220105_gene_enrich_function_2.xlsx",sheetName = "neg_kegg")
+crisprpathway=crisprpathway[crisprpathway$Count>2,]
+load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20221019.RData")
+virus_list=mmu_kegg_list_des[grep("virus",names(mmu_kegg_list_des),ignore.case = T)]
+virus_list=virus_list[names(virus_list)%in%crisprpathway$Description]
+gene=unique(do.call("c",virus_list))
+crisprgene=genesummary_show$gene[genesummary_show$gene%in%gene]
+crisprgeneneg=genesummary_show$gene[genesummary_show$gene%in%gene&genesummary_show$log2FoldChange<0]
+crisprgenepos=genesummary_show$gene[genesummary_show$gene%in%gene&genesummary_show$log2FoldChange>0]
+
+genelist=c(virus_list,list(crisprgene=crisprgene,crisprgeneneg=crisprgeneneg,crisprgenepos=crisprgenepos))
+genelist=lapply(genelist,toupper)
+
+
+library(survminer)
+library(survival)
+load("E:/publicdata/TCGA_BRCA/metabric_TCGA_BRCA.exp.clinical.RData")
+load("E:/databases/mm10_geneloc/20210422_human2mice.RData")#human2mice gene symbol conversion
+
+load("~/human.gene2id.RData")
+
+surv_df=matrix(0,ncol = 6)
+colnames(surv_df)=c("cancertype","pathway","eventype","pval","tenratehigh","tenratelow")
+
+pdf("virus_survival.pdf")
+for(geneset in names(genelist)){
+  gene=genelist[[geneset]]
+  print(geneset)
+  for(db in names(survival_datalist$exp)){
+    print(db)
+    expdata=survival_datalist$exp[[db]]
+    clinical=survival_datalist$clinical[[db]]
+    genetmp=gene[gene%in%rownames(expdata)]
+    clinical$score=apply(expdata[genetmp,,drop=F],2,mean)
+    clinical=clinical[clinical$time>0,]
+    
+    res.cut=surv_cutpoint(clinical,time = "time",event="event",variables = "score")
+    res.cat=surv_categorize(res.cut)
+    fit=survfit(as.formula(paste0('Surv(time, event=="1") ~',"score")), data = res.cat)
+    p1=ggsurvplot(
+      fit,                     # survfit object with calculated statistics.
+      data = res.cat,             # data used to fit survival curves.
+      risk.table = TRUE,       # show risk table.
+      pval = TRUE,             # show p-value of log-rank test.
+      xlab = "Time in years",   # customize X axis label.
+      risk.table.y.text = FALSE # show bars instead of names in text annotations
+    )+labs(title=paste(geneset,db,sep = "_"))
+    
+    print(p1)
+    
+    p=as.numeric(gsub("p = ","",survminer::surv_pvalue(fit)$pval.txt))
+    a=p1$data.survplot[p1$data.survplot$score=="high",]
+    tenratehigh=a$surv[which.min(abs(a$time-10))]
+    a=p1$data.survplot[p1$data.survplot$score=="low",]
+    tenratelow=a$surv[which.min(abs(a$time-10))]
+    # alleventp=c()
+    surv_df=rbind(surv_df,c(db,geneset,"OS",p,signif(tenratehigh,3),signif(tenratelow,3)))
+    
+    for(subtype in levels(clinical$PAM50)){
+      t=clinical[clinical$PAM50%in%subtype,]
+      res.cut=surv_cutpoint(t,time = "time",event="event",variables = "score")
+      res.cat=surv_categorize(res.cut)
+      fit=survfit(as.formula(paste0('Surv(time, event=="1") ~',"score")), data = res.cat)
+      p1=ggsurvplot(
+        fit,                     # survfit object with calculated statistics.
+        data = res.cat,             # data used to fit survival curves.
+        risk.table = TRUE,       # show risk table.
+        pval = TRUE,             # show p-value of log-rank test.
+        xlab = "Time in years",   # customize X axis label.
+        risk.table.y.text = FALSE # show bars instead of names in text annotations
+      )+labs(title=paste(geneset,db,subtype,sep = "_"))
+      
+      print(p1)
+      
+      p=as.numeric(gsub("p = ","",survminer::surv_pvalue(fit)$pval.txt))
+      a=p1$data.survplot[p1$data.survplot$score=="high",]
+      tenratehigh=a$surv[which.min(abs(a$time-10))]
+      a=p1$data.survplot[p1$data.survplot$score=="low",]
+      tenratelow=a$surv[which.min(abs(a$time-10))]
+      # alleventp=c()
+      surv_df=rbind(surv_df,c(paste0(db,"_",subtype),geneset,"OS",p,signif(tenratehigh,3),signif(tenratelow,3)))
+      
+    }
+  }
+  
+}
+dev.off()
+

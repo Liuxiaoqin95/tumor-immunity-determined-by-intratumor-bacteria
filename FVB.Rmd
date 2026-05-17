@@ -1,0 +1,748 @@
+---
+title: "lastest_10x"
+output: html_document
+date: '2022-07-18'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Biobase)
+library(knitr)
+library(reshape2)
+library(ggplot2)
+# library(HSMMSingleCell)
+library(monocle)
+library(RColorBrewer)
+library(Seurat)
+library(colorRamps)
+library(pheatmap)
+library(stringr)
+library(GSVA)
+library(ComplexHeatmap)
+library(dendsort)
+library(dplyr)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))#Paired
+first2big=function(x){
+  t=toupper(substr(x,1,1))
+  t2=tolower(substr(x,2,nchar(x)))
+  return(paste0(t,t2))
+}
+load("E:/humandata/HMU_8_pairs_hg38/20210310_retaindbl/20210514_WIPS/20210723_stromal/celltype_marker_list.RData")
+
+```
+
+
+
+```{r}
+epithelial_marker=c("EPCAM","KRT8","KRT18","KRT19","KRT14","KRT17","KRT5","ERBB2","ESR1","PGR")
+fibroblast_marker=c("ACTA2","PDGFRA","DCN","THY1","COL1A1","FAP","PDPN","COL1A2","COL3A1","COL6A1")
+endo_marker=c("PECAM1","CLDN5","FLT1","RAMP2","VWF","ENG","CDH5","KDR","CD34","RNASE1")
+Bcell_marker=c("CD79A","IGHM","IGHG3","IGHA2","CD19")
+Tcell_marker=c("CD3D","CD3E","CD3G","TRAC","CD2","CD8B","CD8A")
+NK_marker=c("XCL1","KLRD1","KLRF1","FCGR3A","KLRB1","NCAM1","NKG7","GNLY" )
+macrophage_marker=c("CD14","CD163","CD68","FCGR2A","CSF1R")
+DC_marker=c("CD1A","CD1B","FCER1A","CD40","CD80","CD83","CCR7","LAMP3")
+myeloid_marker=c("LYZ","AIF1","C1QB","CD14","CD163","CD68","FCGR2A","CSF1R","CD1A","CD1B","FCER1A","CD80","LAMP3","S100a8","S100a9","ITGA4","ITGAM","ITGAX","ITGB2")
+
+celltypemarker=unique(c(epithelial_marker,fibroblast_marker,endo_marker,Bcell_marker,Tcell_marker,NK_marker,macrophage_marker,DC_marker,myeloid_marker))
+
+celltypemarker=first2big(celltypemarker)
+jpeg(paste0(dataname0,"celltype_marker","_fea.jpg"),width = 2000,height = 1000)
+b=FeaturePlot(object = seuratData,sort(celltypemarker),pt.size = 0.3, ncol = 10)+NoLegend()
+print(b)
+dev.off()
+pdf("marker.pdf",width = 10)
+DotPlot(object=seuratData,assay ="RNA",features = c(celltypemarker))+
+  theme(axis.text.x = element_text(size=5,vjust=0.5,angle = 90))
+DotPlot(object=seuratData[,!is.na(seuratData$celltype2)],assay ="RNA",features = c(celltypemarker),group.by = "celltype")+
+  theme(axis.text.x = element_text(vjust=0.5,angle = 90),axis.text.y = element_text(size = 7))+coord_flip()
+
+dev.off()
+
+celltypemarker=c("S100a8","S100a9","CD14","Cxcr2","ITGAM",
+                 "ITGAX","SIGLEC1","SIGLECF",
+                 "CD68","CSF1R",
+                 "CD40","CD80","CD83","CCR7","LAMP3",
+                 "CD3D","CD3E","CD3G","TRAC","CD2",
+                 "CD79A","IGHM","CD19",
+                 "KLRD1","NKG7",
+                 "PECAM1","CLDN5","FLT1","RAMP2","ENG","CDH5","KDR","CD34"
+                 # "EPCAM","KRT19"
+                 )
+
+celltypemarker=first2big(celltypemarker)
+pdf("marker2.pdf",width = 10)
+DotPlot(object=seuratData,assay ="RNA",features = c(celltypemarker))+
+  theme(axis.text.x = element_text(size=5,vjust=0.5,angle = 90))
+DotPlot(object=seuratData,assay ="RNA",group.by = "celltype",features = c(celltypemarker))+
+  theme(axis.text.x = element_text(size=5,vjust=0.5,angle = 90))
+dev.off()
+
+```
+
+```{r}
+# markerlist=list()
+# seuratData_blood10x=list()
+for(celltype in c("Tcell","Bcell","NK")){#"neutrophil","macrophage","DC",
+  print(celltype)
+  s=seuratData[,seuratData$celltype==celltype]
+  s <- FindVariableFeatures(s, selection.method = "vst", nfeatures = 5000)
+  s <- ScaleData(object = s, vars.to.regress = c("S.Score", "G2M.Score",'percent.mt','percent.ercc','nFeature_RNA'))
+  
+  #Dimension reduction
+  s <- RunPCA(s, npcs = 50, verbose = FALSE,features =VariableFeatures(s) )
+  dims=10
+  if(ncol(s)<70){
+    s <- RunTSNE(s, dims = 1:dims, verbose = FALSE,perplexity=20)
+  }else{
+    s <- RunTSNE(s, dims = 1:dims, verbose = FALSE)
+  }
+  s <- FindNeighbors(s,reduction = 'pca', verbose = FALSE, dims = 1:dims)
+  s <- FindClusters(s, algorithm = 1, random.seed = 256, resolution = 0.3)
+  p1=DimPlot(s,label = T)
+  p2=DimPlot(s,group.by = "orig")
+  p3=DimPlot(s,group.by = "orig2")
+  
+  # t=c("KLRF1","KLRD1","CD4","CD3D","CD3G","CD3E","CD8A","CD8B")
+  g=first2big(c(do.call("c",celltype_marker_list[[celltype]]),celltypemarker))
+  g=g[!duplicated(g)]
+  names(g)=NULL
+  p4=DotPlot(s,features = g)+coord_flip()
+  
+  pdf(paste0(dataname0,"_",celltype,".pdf"))
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  dev.off()
+  
+  seuratData_blood10x[[celltype]]=s
+  
+  if(length(unique(s$seurat_clusters))==1){next()}
+  
+  marker=FindAllMarkers(s,only.pos = T)
+  t=do.call("c",lapply(unique(sort(as.numeric(as.character(s$seurat_clusters)))),function(x){head(marker$gene[marker$cluster==x],10)}))
+  t=t[!duplicated(t)]
+  p3=FeaturePlot(s,features = c(t),ncol = 10)
+  tiff(paste0(dataname0,celltype,".markergene.tiff"),res = 300,width = 10000,height = 1000*length(unique(s$seurat_clusters)))
+  print(p3)
+  dev.off()
+  markerlist[[celltype]]=marker
+  
+  
+}
+save(seuratData_blood10x,markerlist,file = "20220718seuratData_blood10x_list.RData")
+
+seuratData_blood10x=lapply(seuratData_blood10x,function(x){return(x[,!is.na(x$celltype2)])})
+seuratData_blood10x$Tcell=seuratData_blood10x$Tcell[,!(seuratData_blood10x$Tcell$seurat_clusters%in%c(5,7))]
+seuratData_blood10x$Tcell$seurat_clusters=droplevels(seuratData_blood10x$Tcell$seurat_clusters)
+seuratData_blood10x$Tcell$celltype2=plyr::mapvalues(seuratData_blood10x$Tcell$seurat_clusters,
+                                                    from = c(c(0,1),c(2),c(3,4,8),6),
+                                                    to=c(rep("CD4Tnaive",2),"CD8Tnaive",rep("Treg",3),"Tcytotoxic")
+                                                    )
+save(seuratData_blood10x,markerlist,file = "20220718seuratData_blood10x_list_cleared.RData")
+
+
+```
+
+
+
+```{r}
+# markerlist_extract=list()
+# seuratData_blood10x_extract=list()
+
+for(celltype in c( "macrophage","DC", "Tcell", "Bcell", "NK")){#"neutrophil",
+  print(celltype)
+  s=seuratData_blood10x[[celltype]]
+  # s=s[,s$celltype2%in%celltypeextract[[celltype]]]
+  s <- FindVariableFeatures(s, selection.method = "vst", nfeatures = 5000)
+  s <- ScaleData(object = s, vars.to.regress = c("S.Score", "G2M.Score",'percent.mt','percent.ercc','nFeature_RNA'))
+  
+  #Dimension reduction
+  s <- RunPCA(s, npcs = 50, verbose = FALSE,features =VariableFeatures(s) )
+  dims=10
+  if(ncol(s)<70){
+    s <- RunTSNE(s, dims = 1:dims, verbose = FALSE,perplexity=20)
+  }else{
+    s <- RunTSNE(s, dims = 1:dims, verbose = FALSE)
+  }
+  s <- FindNeighbors(s,reduction = 'pca', verbose = FALSE, dims = 1:dims)
+  s <- FindClusters(s, algorithm = 1, random.seed = 256, resolution = 0.3)
+  p1=DimPlot(s,label = T)
+  p2=DimPlot(s,group.by = "orig")
+  p3=DimPlot(s,group.by = "orig2")
+  p5=DimPlot(s,group.by = "celltype2")
+  g=first2big(c(do.call("c",celltype_marker_list[[celltype]]),celltypemarker))
+  g=g[!duplicated(g)]
+  names(g)=NULL
+  g=g[g%in%rownames(s)]
+  p4=DotPlot(s,features = g)+coord_flip()+theme(axis.text.y=element_text(size=5))
+  p4.2=DotPlot(s,features = g,group.by = "celltype2")+coord_flip()+theme(axis.text.y=element_text(size=5),axis.text.x = element_text(angle = 90))
+  
+  pdf(paste0(dataname0,"_",celltype,".pdf"))
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  print(p4.2)
+  print(p5)
+  dev.off()
+  
+  seuratData_blood10x_extract[[celltype]]=s
+  if(length(unique(s$seurat_clusters))==1){next()}
+  
+  marker=FindAllMarkers(s,only.pos = T)
+  t=do.call("c",lapply(unique(sort(as.numeric(as.character(s$seurat_clusters)))),function(x){head(marker$gene[marker$cluster==x],10)}))
+  t=t[!duplicated(t)]
+  p3=FeaturePlot(s,features = c(t),ncol = 10)
+  tiff(paste0(dataname0,celltype,".markergene.tiff"),res = 300,width = 10000,height = 1000*length(unique(s$seurat_clusters)))
+  print(p3)
+  dev.off()
+  
+  markerlist_extract[[celltype]]=marker
+  
+}
+
+seuratData_blood10x_extract$NK=seuratData_blood10x_extract$NK[,!(seuratData_blood10x_extract$NK$seurat_clusters%in%c("5"))]
+seuratData_blood10x_extract$Bcell=seuratData_blood10x_extract$Bcell[,!(seuratData_blood10x_extract$Bcell$seurat_clusters%in%"5")]
+seuratData_blood10x_extract$macrophage=seuratData_blood10x_extract$macrophage[,!(seuratData_blood10x_extract$macrophage$seurat_clusters%in%"5")]
+save(markerlist_extract,seuratData_blood10x_extract,file = "extracted.markerlist.seuratData_10x_list.RData")
+
+```
+
+```{r}
+for(celltype in names(seuratData_blood10x_extract)){
+  print(celltype)
+  s=seuratData_blood10x_extract[[celltype]]
+  
+    p1=DimPlot(s,label = T)
+  p2=DimPlot(s,group.by = "orig")
+  p3=DimPlot(s,group.by = "orig2")
+  p5=DimPlot(s,group.by = "celltype2")
+  g=first2big(c(do.call("c",celltype_marker_list[[celltype]]),celltypemarker))
+  g=g[!duplicated(g)]
+  names(g)=NULL
+  g=g[g%in%rownames(s)]
+  p4=DotPlot(s,features = g)+coord_flip()+theme(axis.text.y=element_text(size=5))
+  p4.2=DotPlot(s,features = g,group.by = "celltype2")+coord_flip()+theme(axis.text.y=element_text(size=5),axis.text.x = element_text(angle = 90))
+  
+  pdf(paste0(dataname0,"_",celltype,".pdf"))
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  print(p4.2)
+  print(p5)
+  dev.off()
+}
+
+```
+
+```{r}
+sapply(seuratData_blood10x_extract,function(x){class(x$celltype2)})
+
+for(celltype in names(seuratData_blood10x_extract)){
+  print(celltype)
+  s=seuratData_blood10x_extract[[celltype]]
+  s$celltype2=droplevels(s$celltype2)
+  seuratData_blood10x_extract[[celltype]]=s
+}
+
+
+```
+
+```{r}
+extracted_celltype=do.call("rbind",lapply(seuratData_blood10x_extract,function(x){return(x@meta.data[,c("orig","orig2","celltype","celltype2")])}))
+extracted_celltype$cell=gsub(".*[.]","",rownames(extracted_celltype))
+
+seuratData$celltype2=""
+seuratData$celltype2[match(extracted_celltype$cell,colnames(seuratData))]=as.character(extracted_celltype$celltype2)
+seuratData$celltype2[seuratData$celltype=="endo"]="endo"
+seuratData$celltype2[seuratData$celltype2==""]="other"
+seuratData$celltype2=factor(seuratData$celltype2,levels = c("neutrophil","alveolar_mac","tissue_mac","DC","CD4Tnaive","CD8Tnaive","Treg","Tcytotoxic","Bcell","NK","endo"))
+
+pdf("all_celltype2.pdf")
+DimPlot(seuratData,group.by = "celltype2",label = T)
+dev.off()
+
+seuratData=seuratData[,!is.na(seuratData$celltype2)]
+seuratData=seuratData[,!seuratData$celltype%in%"endo"]
+seuratData=seuratData[,seuratData$celltype!="other"]
+save(seuratData,file = "seuratData.tsne.RData")
+
+data=data.frame(table(seuratData@meta.data[,c("celltype","orig")]))
+data=data.frame(table(seuratData@meta.data[,c("celltype","orig2")]))
+colnames(data)[2]="orig"
+colnames(data)[1]="celltype"
+
+pdf(paste0(dataname0,"_blood_cellproportion_cleared.pdf"))
+data=data[!data$celltype%in%c("endo","other","epithelial"),]
+data=data%>%group_by(orig)%>%mutate(combined_freq=Freq/sum(Freq))
+data=data%>%group_by(celltype)%>%mutate(combined_freq2=Freq/sum(Freq))
+
+ggplot(data,aes(celltype,combined_freq2,fill=orig))+geom_bar(stat="identity")+theme_classic()+theme(axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0))
+ggplot(data,aes(orig,combined_freq,fill=celltype))+geom_bar(stat="identity")+theme_classic()+theme(axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0))
+# par(mfcol=c(2,2))
+# for(i in levels(seuratData$orig2)){
+#   
+#   pie(data$combined_freq[data$orig==i],labels = paste(data$celltype[data$orig==i],round(data$combined_freq[data$orig==i],2)),main = i)
+# 
+# }
+dev.off()
+
+metadata=seuratData@meta.data
+metadata=metadata[!metadata$celltype%in%c("endo","other"),]
+data=data.frame(table(seuratData@meta.data[,c("celltype2","orig2")]))
+colnames(data)[2]="orig"
+colnames(data)[1]="celltype"
+data=data[!data$celltype%in%c("endo","other","epithelial"),]
+data=data%>%group_by(orig)%>%mutate(combined_freq=Freq/sum(Freq))
+data=data%>%group_by(celltype)%>%mutate(combined_freq2=Freq/sum(Freq))
+
+pdf("FVB_cell_percentage.pdf")
+ggplot(data,aes(orig,combined_freq,fill=celltype))+geom_bar(stat="identity")+
+  geom_text(aes(label=signif(combined_freq,3)))+
+  theme_classic()+theme(axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0))+
+  scale_fill_manual(values = colpalettes)+facet_wrap(~celltype,scales = "free_y")
+dev.off()
+```
+
+```{r}
+# public N1 N2 MDSC signature
+
+N2_vs_N1=xlsx::read.xlsx("E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/publicdata/1/koni-05-11-1232221-s001/KONI_A_1232221_s04.xlsx",sheetIndex = 1,startRow = 6)
+N2vsN1=data.frame(gene=c(N2_vs_N1$Gene,N2_vs_N1$Gene.1,N2_vs_N1$Gene.2),N2VSN1=c(N2_vs_N1$Fold.change.N2.vs..N1,N2_vs_N1$Fold.change.N2.vs..N1.1,N2_vs_N1$Fold.change.N2.vs..N1.2))
+
+N2vsN1$N1N2="N1"
+N2vsN1$N1N2[N2vsN1$N2VSN1>0]="N2"
+N2vsN1=N2vsN1[,c(3,1,2)]
+
+N1genes=N2vsN1$gene[N2vsN1$N1N2=="N1"]
+
+s=seuratData_blood10x_extract$neutrophil
+s=s[,s$celltype2=="neutrophil"]
+s=AddModuleScore(s,features = list(N1=N1genes),seed = 100)
+colnames(s@meta.data)[ncol(s@meta.data)]="N1score"
+p1=VlnPlot(s,"N1score",group.by = "seurat_clusters")
+p2=VlnPlot(s,"N1score",group.by = "orig2")
+p2.1=ggplot(s@meta.data,aes(orig2,N1score,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+
+  ggpubr::stat_compare_means(comparisons = list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+
+# marker=FindMarkers(s,ident.1 = "staph",ident.2 = "control",logfc.threshold = 0,group.by = "orig")
+# geneList=marker$avg_log2FC
+# names(geneList)=rownames(marker)
+# geneList=sort(geneList,decreasing = T)
+# gsea <- clusterProfiler::GSEA(geneList, TERM2GENE = N2vsN1[N2vsN1$N1N2=="N1",],pvalueCutoff =1,pAdjustMethod=NULL)
+# 
+# p3=enrichplot::gseaplot2(gsea,geneSetID="N1",pvalue_table = T,title = "N1",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+
+pdf("N1_staph_control.pdf")
+print(p1)
+print(p2)
+p2.1
+# print(p3)
+dev.off()
+
+f="E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/publicdata/2/NN_gene.xlsx"
+N1N2gene=list(GMDSC_NN=xlsx::read.xlsx(f,sheetName = "GMDSC_NN"),
+              TAN_NN=xlsx::read.xlsx(f,sheetName = "TAN_NN"),
+              TAN_GMDSC=xlsx::read.xlsx(f,sheetName = "TAN_GMDSC"))
+N1N2gene=lapply(N1N2gene,function(x){x[-1,]})
+plosone_N1N2=sapply(N1N2gene,function(x){x$Gene.Symbol})
+s=AddModuleScore(s,features = plosone_N1N2,seed = 100)
+colnames(s@meta.data)[grep("Cluster1",colnames(s@meta.data)):ncol(s@meta.data)]=names(N1N2gene)
+data=s@meta.data
+p1.1=ggplot(data,aes(orig2,GMDSC_NN,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons =list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+p2.1=ggplot(data,aes(orig2,TAN_NN,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons =list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+p3.1=ggplot(data,aes(orig2,TAN_GMDSC,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons =list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+
+# N1N2gene_df=data.frame(type=rep(c(names(N1N2gene)),c(sapply(N1N2gene,nrow))),gene=do.call("c",lapply(N1N2gene,function(x){x$Gene.Symbol})))
+# gsea <- clusterProfiler::GSEA(geneList, TERM2GENE = N1N2gene_df,pvalueCutoff =1,pAdjustMethod=NULL,minGSSize = 1)
+# p4.1=enrichplot::gseaplot2(gsea,geneSetID="TAN_NN",pvalue_table = T,title = "TAN_NN",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+# p4.2=enrichplot::gseaplot2(gsea,geneSetID="TAN_GMDSC",pvalue_table = T,title = "TAN_GMDSC",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+# p4.3=enrichplot::gseaplot2(gsea,geneSetID="GMDSC_NN",pvalue_table = T,title = "GMDSC_NN",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+
+pdf("plosone.gsea.pdf")
+
+print(p1.1)
+print(p2.1)
+print(p3.1)
+
+dev.off()
+
+
+datasig=read.table("E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/sig_gene.txt",header = T,as.is = T)
+
+N1N2gene=list(N1=rownames(datasig)[datasig$N1_N.log2FoldChange>1&datasig$N1_N.padj<0.05&datasig$N1_N2.log2FoldChange>1&datasig$N1_N2.padj<0.05],
+              N2=rownames(datasig)[datasig$N2_N.log2FoldChange>1&datasig$N2_N.padj<0.05&datasig$N1_N2.log2FoldChange< -1&datasig$N1_N2.padj<0.05])
+
+N1N2gene=lapply(N1N2gene,function(x){x[!is.na(x)]})
+s=seuratData_blood10x_extract$neutrophil
+s=s[,s$celltype2=="neutrophil"]
+s=AddModuleScore(s,features = N1N2gene,seed = 100)
+colnames(s@meta.data)[grep("Cluster1",colnames(s@meta.data)):ncol(s@meta.data)]=names(N1N2gene)
+data=s@meta.data
+p1.1=ggplot(data,aes(orig2,N1,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons =list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+p2.1=ggplot(data,aes(orig2,N2,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons =list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+
+# marker=FindMarkers(s,ident.1 = "staph",ident.2 = "control",logfc.threshold = 0,group.by = "orig")
+# geneList=marker$avg_log2FC
+# names(geneList)=rownames(marker)
+# geneList=sort(geneList,decreasing = T)
+# N1N2gene_df=data.frame(type=rep(c(names(N1N2gene)),c(sapply(N1N2gene,length))),gene=do.call("c",N1N2gene))
+# gsea <- clusterProfiler::GSEA(geneList, TERM2GENE = N1N2gene_df,pvalueCutoff =1,pAdjustMethod=NULL,minGSSize = 1)
+# p4.1=enrichplot::gseaplot2(gsea,geneSetID="N1",pvalue_table = T,title = "N1",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+# p4.2=enrichplot::gseaplot2(gsea,geneSetID="N2",pvalue_table = T,title = "N2",color = 1,subplots = c(1,2,3),rel_heights = c(10,1,2))
+
+pdf("frontiers_in_immunology.gsea.pdf")
+print(p1.1)
+print(p2.1)
+
+dev.off()
+
+
+GMDSC=xlsx::read.xlsx("E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/publicdata/5_MDSC/GMDSC.xlsx",sheetIndex = 1)
+GMDSC=GMDSC[GMDSC$avg_logFC>0.25,]
+MMDSC=xlsx::read.xlsx("E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/publicdata/5_MDSC/MMDSC.xlsx",sheetIndex = 1)
+MMDSC=MMDSC[MMDSC$avg_logFC>0.25,]
+MDSC=list(GMDSC=GMDSC$gene,MMDSC=MMDSC$gene)
+
+s=seuratData_blood10x_extract$neutrophil
+s=s[,s$celltype2=="neutrophil"]
+s=AddModuleScore(s,features = MDSC,seed = 100)
+colnames(s@meta.data)[grep("Cluster1",colnames(s@meta.data)):ncol(s@meta.data)]=names(MDSC)
+data=s@meta.data
+p1=ggplot(data,aes(orig2,GMDSC,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+theme_classic()+
+  ggpubr::stat_compare_means(comparisons = list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))
+p2=ggplot(data,aes(orig2,MMDSC,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+theme_classic()+
+  ggpubr::stat_compare_means(comparisons = list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))
+pdf("MDSC.pdf")
+p1
+p2
+dev.off()
+
+N2=xlsx::read.xlsx("E:/YaoBingQing/20210529_blood_singlecell/celltype_recluster/publicdata/3combine_multi_paper/N2_gene_combined.xlsx",sheetIndex = 1,header = F)
+
+s=AddModuleScore(s,features = list(N2=sapply(N2$X1,first2big)),seed = 100)
+colnames(s@meta.data)[ncol(s@meta.data)]="N2"
+
+p1=VlnPlot(s,"N2",group.by = "orig2")
+p2=ggplot(s@meta.data,aes(orig2,N2,col=orig2))+geom_violin()+geom_boxplot(width=.1,outlier.colour = NA)+ggpubr::stat_compare_means(comparisons = list(c("PBS","Bacteria"),c("PBS","woBac"),c("Bacteria","withBac"),c("woBac","withBac")))+theme_classic()
+
+pdf("N2_combined.pdf")
+p1
+p2
+dev.off()
+
+```
+
+### neutrophil function
+```{r}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(ggplot2)
+k=keys(org.Mm.eg.db,keytype = "SYMBOL")
+list=select(org.Mm.eg.db,keys=k,columns = c("ENTREZID","SYMBOL"), keytype="SYMBOL")
+
+markerlist=list()
+enrichfunciton=list()
+
+for(celltype in c(names(seuratData_blood10x_extract))){
+  print(celltype)
+  s=seuratData_blood10x_extract[[celltype]]
+  Idents(s)="orig2"
+  pairstocomp=list(Bacteria_PBS=c("Bacteria","PBS"),withBac_woBac=c("withBac","woBac"),woBac_PBS=c("woBac","PBS"),withBac_Bacteria=c("withBac","Bacteria"))
+  
+  for(i in names(pairstocomp)){
+    print(i)
+    id1=pairstocomp[[i]][1]
+    id2=pairstocomp[[i]][2]
+    f=FindMarkers(s,ident.1 = id1,ident.2 = id2)
+    f=f[f$p_val<0.05,]
+    markerlist[[celltype]][[i]]=f
+  }
+}
+save(markerlist,list,file = "tmp.RData")
+
+for(celltype in c(names(markerlist))){
+  print(celltype)
+  
+  for(i in names(markerlist[[1]])){
+    print(i)
+    for(j in c("high","low")){
+      print(j)
+      genes=rownames(markerlist[[celltype]][[i]])[markerlist[[celltype]][[i]]$avg_log2FC>0]
+      if(j=="low"){
+        genes=rownames(markerlist[[celltype]][[i]])[markerlist[[celltype]][[i]]$avg_log2FC<0]
+      }
+      
+      geneID=list$ENTREZID[match(genes,list$SYMBOL,nomatch=0)]
+      ego=enrichGO(gene = geneID, OrgDb = org.Mm.eg.db, ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+      ekegg <-enrichKEGG(gene = geneID, organism = 'mmu', pAdjustMethod = "BH", qvalueCutoff = 0.05)
+      
+      if(!is.null(ego)){
+        ego=ego@result[ego@result$pvalue<0.05,]
+        enrichfunciton[[celltype]][[i]][[j]][["ego"]]=ego
+      }
+      if(!is.null(ekegg)){
+        ekegg=ekegg@result[ekegg@result$pvalue<0.05,]
+        ekegg$genesymbol=sapply(ekegg$geneID,function(x){a=unlist(strsplit(x,"/"));b=list$SYMBOL[match(a,list$ENTREZID,nomatch = 0)];return(paste0(b,collapse = "/"))})
+        enrichfunciton[[celltype]][[i]][[j]][["ekegg"]]=ekegg
+
+      }
+    }
+    
+  }
+  
+}
+
+save(enrichfunciton,file = "20220813_celltype_enrichfunction.RData")
+
+
+for(i in names(enrichfunciton)){
+  # print(i)
+  for(j in names(enrichfunciton[[i]])){
+    # print(j)
+    for(k in names(enrichfunciton[[i]][[j]])){
+      # print(k)
+      for(m in c("ego","ekegg")){
+        print(paste(i,j,k,m))
+        xlsx::write.xlsx(enrichfunciton[[i]][[j]][[k]][[m]],file =paste0("20220813_",i,m,".xlsx"),sheetName = paste(j,k,sep = "_"),append = T)
+      }
+    }
+  }
+  
+}
+
+
+```
+
+#compare with PBS
+
+```{r}
+markerlist_PBS=list()
+enrichfunciton_PBS=list()
+
+for(celltype in c(names(seuratData_blood10x_extract))){
+  print(celltype)
+  s=seuratData_blood10x_extract[[celltype]]
+  Idents(s)="orig2"
+  pairstocomp=list(Bacteria_PBS=c("Bacteria","PBS"),woBac_PBS=c("woBac","PBS"),withBac_PBS=c("withBac","PBS"))
+  
+  for(i in names(pairstocomp)){
+    print(i)
+    id1=pairstocomp[[i]][1]
+    id2=pairstocomp[[i]][2]
+    f=FindMarkers(s,ident.1 = id1,ident.2 = id2)
+    f=f[f$p_val<0.05,]
+    markerlist_PBS[[celltype]][[i]]=f
+  }
+}
+save(markerlist_PBS,list,file = "tmp.RData")
+
+for(celltype in c(names(markerlist_PBS))){
+  print(celltype)
+  
+  for(i in names(markerlist_PBS[[1]])){
+    print(i)
+    for(j in c("high","low")){
+      print(j)
+      genes=rownames(markerlist_PBS[[celltype]][[i]])[markerlist_PBS[[celltype]][[i]]$avg_log2FC>0]
+      if(j=="low"){
+        genes=rownames(markerlist_PBS[[celltype]][[i]])[markerlist_PBS[[celltype]][[i]]$avg_log2FC<0]
+      }
+      
+      geneID=list$ENTREZID[match(genes,list$SYMBOL,nomatch=0)]
+      ego=enrichGO(gene = geneID, OrgDb = org.Mm.eg.db, ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+      ekegg <-enrichKEGG(gene = geneID, organism = 'mmu', pAdjustMethod = "BH", qvalueCutoff = 0.05)
+      
+      if(!is.null(ego)){
+        ego=ego@result[ego@result$pvalue<0.05,]
+        enrichfunciton_PBS[[celltype]][[i]][[j]][["ego"]]=ego
+      }
+      if(!is.null(ekegg)){
+        ekegg=ekegg@result[ekegg@result$pvalue<0.05,]
+        ekegg$genesymbol=sapply(ekegg$geneID,function(x){a=unlist(strsplit(x,"/"));b=list$SYMBOL[match(a,list$ENTREZID,nomatch = 0)];return(paste0(b,collapse = "/"))})
+        enrichfunciton_PBS[[celltype]][[i]][[j]][["ekegg"]]=ekegg
+        
+      }
+    }
+    
+  }
+  
+}
+
+save(enrichfunciton_PBS,file = "20220813_celltype_enrichfunction_PBS.RData")
+
+
+for(i in names(enrichfunciton_PBS)){
+  # print(i)
+  for(j in names(enrichfunciton_PBS[[i]])){
+    # print(j)
+    for(k in names(enrichfunciton_PBS[[i]][[j]])){
+      # print(k)
+      for(m in c("ego","ekegg")){
+        print(paste(i,j,k,m))
+        xlsx::write.xlsx(enrichfunciton_PBS[[i]][[j]][[k]][[m]],file =paste0("20220813_",i,m,"_PBS.xlsx"),sheetName = paste(j,k,sep = "_"),append = T)
+      }
+    }
+  }
+  
+}
+
+```
+
+#function show
+```{r}
+
+neutrophil=c("Antigen processing and presentation","Lysosome","Phagosome",
+          "NOD-like receptor signaling pathway","Ribosome",
+          "Natural killer cell mediated cytotoxicity",
+          "Lipid and atherosclerosis",
+          "NF-kappa B signaling pathway",
+          "Th17 cell differentiation",
+          "PD-L1 expression and PD-1 checkpoint pathway in cancer",
+          "Transcriptional misregulation in cancer",
+          "PI3K-Akt signaling pathway","TNF signaling pathway",
+          "MAPK signaling pathway","IL-17 signaling pathway")
+
+
+# tissue_mac=c("Antigen processing and presentation","Staphylococcus aureus infection","NOD-like receptor signaling pathway","IL-17 signaling pathway","Allograft rejection","TNF signaling pathway","Lysosome","Chemokine signaling pathway","Inflammatory bowel disease","NF-kappa B signaling pathway","Toll-like receptor signaling pathway","Fluid shear stress and atherosclerosis","Cell adhesion molecules","Th1 and Th2 cell differentiation","Transcriptional misregulation in cancer","Th17 cell differentiation","T cell receptor signaling pathway","Salmonella infection","Small cell lung cancer","PI3K-Akt signaling pathway")
+# alveolar_mac=c("TNF signaling pathway","Oxidative phosphorylation","NF-kappa B signaling pathway","IL-17 signaling pathway","Toll-like receptor signaling pathway","NOD-like receptor signaling pathway","Chemokine signaling pathway","Cellular senescence","Allograft rejection","Necroptosis","MAPK signaling pathway","Antigen processing and presentation","Transcriptional misregulation in cancer","Autoimmune thyroid disease","Oxidative phosphorylation","Thermogenesis","Lysosome","Cholesterol metabolism","Spliceosome","Apoptosis","Regulation of actin cytoskeleton","Acute myeloid leukemia","Thyroid cancer","Colorectal cancer","cGMP-PKG signaling pathway","Glucagon signaling pathway","cAMP signaling pathway","Adherens junction","Glutathione metabolism","HIF-1 signaling pathway","Cysteine and methionine metabolism")
+# neutrophil=c(c("Antigen processing and presentation","NOD-like receptor signaling pathway","Phagosome","Natural killer cell mediated cytotoxicity","Lysosome","Ribosome","Ribosome","Lipid and atherosclerosis","NF-kappa B signaling pathway","TNF signaling pathway","Th17 cell differentiation","PD-L1 expression and PD-1 checkpoint pathway in cancer","NOD-like receptor signaling pathway","MAPK signaling pathway","PI3K-Akt signaling pathway","IL-17 signaling pathway","Transcriptional misregulation in cancer","NF-kappa B signaling pathway","TNF signaling pathway","NOD-like receptor signaling pathway","MAPK signaling pathway","IL-17 signaling pathway","PI3K-Akt signaling pathway","Ribosome","NF-kappa B signaling pathway","Lipid and atherosclerosis","Th17 cell differentiation","TNF signaling pathway","PD-L1 expression and PD-1 checkpoint pathway in cancer","IL-17 signaling pathway","MAPK signaling pathway"))
+
+showpathway_list=list(neutrophil=neutrophil)
+showpathway_list=lapply(showpathway_list,unique)
+for(celltype in names(showpathway_list)){
+    showpathway=showpathway_list[[celltype]]
+    load("E:/databases/pathway_genesets/02_kegg_API_download/kegg_api_geneSets20210604.RData")
+    
+    names(mmu_kegg_list_des)=gsub(" - Mus musculus \\(mouse\\)","",names(mmu_kegg_list_des))
+    k=mmu_kegg_list_des[match(showpathway,names(mmu_kegg_list_des),nomatch = 0)]
+    s=seuratData_blood10x_extract[[celltype]] ##neutrophil
+    s=AddModuleScore(s,features = k,seed = 100)
+    colnames(s@meta.data)[match("Cluster1",colnames(s@meta.data)):ncol(s@meta.data)]=names(k)
+    
+    d=s@meta.data[,names(k)]
+    d=aggregate(d,by=list(orig2=s$orig2),median)
+    rownames(d)=d$orig2
+    d=d[,-1]
+    d=t(d)
+    t=t(scale(t(d)))
+    
+    annot_df_col=data.frame(orig2=colnames(t))
+    column_color2=rainbow(length(unique(annot_df_col$orig2)))
+    names(column_color2)=levels(s$orig2)
+    anno_col=HeatmapAnnotation(df=annot_df_col,col=list(orig2=column_color2))
+    
+    heatmap.score=Heatmap(t, name = "scaledata", 
+                          cluster_rows = T, 
+                          cluster_columns = F, 
+                          # top_annotation = anno_col, use_raster=T,
+                          show_column_dend = F, show_row_dend = F, 
+                          clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                          row_km = 1)
+    heatmap.score2=Heatmap(t[,-match("PBS",colnames(t))], name ="rmPBS", 
+                           cluster_rows = T, 
+                           cluster_columns = F, 
+                           show_column_dend = F, show_row_dend = F, 
+                           clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                           row_km = 1)
+    t2=t-t[,"PBS"]
+    heatmap.score3=Heatmap(t2[,-match("PBS",colnames(t2))], name = "-PBS", 
+                           cluster_rows = T, 
+                           cluster_columns = F, 
+                           show_column_dend = F, show_row_dend = F, 
+                           clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                           row_km = 1)
+    # load("20220426_exact_cell_celltype_function_s0.RData")
+    # load("F:/Edata/yaobingqing/20220315_10x/20220426_extract_cell_exact_recluster/markergene_function/20220426_exact_cell_celltype_function_s0.RData")
+    d=do.call("rbind",lapply(enrichfunciton[[celltype]],function(x){x$high$ekegg}))
+    d$comp=gsub(".mmu.*","",rownames(d))
+    d=d[d$Description%in%showpathway,]
+    d$GeneRatio=sapply(d$GeneRatio,function(x){t=unlist(strsplit(x,'/'));as.numeric(t[1])/as.numeric(t[2])})
+    d$comp=factor(d$comp,levels = c("Bacteria_PBS","withBac_woBac","woBac_PBS","withBac_Bacteria"))
+    d=d[order(d$comp),]
+    d$Description=factor(d$Description,levels = d$Description[!duplicated(d$Description)])
+    d=d[d$p.adjust<0.05,]
+    p.dot=ggplot(d)+geom_point(aes(x=comp,y=Description,fill=pvalue,size=GeneRatio),shape=21)+
+      scale_fill_continuous(name="pvalue",low="red",high="blue")+theme_bw()+
+      theme(axis.ticks.y = element_blank(),axis.text.x = element_text(angle = 45,hjust = 1),
+            axis.text.y = element_text(size = 5),plot.title = element_text(hjust = 0.5))+labs(title=paste0(celltype," ",celltype2," high"))
+    
+    p=unique(d$Description)
+    s=levels(d$comp)
+    m=matrix(NA,nrow =length(p),ncol = length(s))
+    colnames(m)=s
+    rownames(m)=p
+    for(i in colnames(m)){
+      t=d[d$comp==i,]
+      m[match(t$Description,p),i]=t$p.adjust
+      
+      
+    }
+    
+    
+    annot_df_col=data.frame(orig2=colnames(m))
+    column_color2=rainbow(length(unique(annot_df_col$orig2)))
+    names(column_color2)=colnames(m)
+    anno_col=HeatmapAnnotation(df=annot_df_col,col=list(orig2=column_color2))
+    col_fun = circlize::colorRamp2(c( 0,0.05), c("red","green"))
+    heatmap.padj=Heatmap(m, name = "scaledata", 
+                         cluster_rows = F, col=col_fun,
+                         cluster_columns = F, 
+                         top_annotation = anno_col, use_raster=T,
+                         # column_split = annot_df_col$type,
+                         # row_split= max_ind,
+                         # left_annotation = anno_row,
+                         show_column_dend = F, show_row_dend = F, 
+                         clustering_distance_rows='euclidean', show_row_names = T,show_column_names = T,
+                         na_col = "black",
+                         row_km = 1)
+    
+    pdf(paste0("20220813",celltype,"function.pdf"))
+    print(heatmap.score)
+    print(heatmap.score2)
+    print(heatmap.score3)
+    print(p.dot)
+    print(heatmap.padj)
+    dev.off()
+}
+
+for(celltype in names(enrichfunciton)){
+  print(celltype)
+  pdf(paste0("20220813_",celltype,"kegg.pdf"))
+  d=do.call("rbind",lapply(enrichfunciton[[celltype]],function(x){x$high$ekegg}))
+  d$GeneRatio=sapply(d$GeneRatio,function(x){t=unlist(strsplit(x,'/'));as.numeric(t[1])/as.numeric(t[2])})
+  d$comp=gsub(".mmu.*","",rownames(d))
+  d$comp=factor(d$comp,levels = c("Bacteria_PBS","withBac_woBac","woBac_PBS","withBac_Bacteria"))
+  d=d[order(d$comp),]
+  d$Description=factor(d$Description,levels = d$Description[!duplicated(d$Description)])
+  d=d[d$p.adjust<0.05,]
+  p.dot1=ggplot(d)+geom_point(aes(x=comp,y=Description,fill=pvalue,size=GeneRatio),shape=21)+
+    scale_fill_continuous(name="pvalue",low="red",high="blue")+theme_bw()+
+    theme(axis.ticks.y = element_blank(),axis.text.x = element_text(angle = 45,hjust = 1),
+          axis.text.y = element_text(size = 5),plot.title = element_text(hjust = 0.5))+labs(title=paste0(celltype," "," high"))
+  print(p.dot1)
+  
+  d=do.call("rbind",lapply(enrichfunciton_PBS[[celltype]],function(x){x$high$ekegg}))
+  d$GeneRatio=sapply(d$GeneRatio,function(x){t=unlist(strsplit(x,'/'));as.numeric(t[1])/as.numeric(t[2])})
+  d$comp=gsub("_PBS.mmu.*","",rownames(d))
+  d$comp=factor(d$comp,levels = c("Bacteria","woBac","withBac"))
+  d=d[order(d$comp),]
+  d$Description=factor(d$Description,levels = d$Description[!duplicated(d$Description)])
+  d=d[d$p.adjust<0.05,]
+  p.dot2=ggplot(d)+geom_point(aes(x=comp,y=Description,fill=pvalue,size=GeneRatio),shape=21)+
+    scale_fill_continuous(name="pvalue",low="red",high="blue")+theme_bw()+
+    theme(axis.ticks.y = element_blank(),axis.text.x = element_text(angle = 45,hjust = 1),
+          axis.text.y = element_text(size = 5),plot.title = element_text(hjust = 0.5))+labs(title=paste0(celltype," "," high"))
+  print(p.dot2)
+  dev.off()
+  
+}
+
+```
